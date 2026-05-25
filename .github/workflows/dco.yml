@@ -1,0 +1,64 @@
+name: DCO
+
+# Verifies that every commit in a pull request carries a Signed-off-by: trailer
+# matching the commit author. Required by CONTRIBUTING.md + DCO.md.
+#
+# This workflow does NOT require any secrets and runs on the default
+# GITHUB_TOKEN. It is safe to enable on every public mirror.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dco-check:
+    name: DCO sign-off check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR commits
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify every commit is DCO-signed
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          echo "Checking commits in range $BASE..$HEAD"
+
+          FAILED=0
+          while read -r SHA; do
+            if [ -z "$SHA" ]; then continue; fi
+            AUTHOR_NAME=$(git log -1 --format='%an' "$SHA")
+            AUTHOR_EMAIL=$(git log -1 --format='%ae' "$SHA")
+            EXPECTED="Signed-off-by: ${AUTHOR_NAME} <${AUTHOR_EMAIL}>"
+            MSG=$(git log -1 --format='%B' "$SHA")
+            if ! printf '%s' "$MSG" | grep -qFx "$EXPECTED"; then
+              echo "::error::Commit $SHA is missing or has a mismatched DCO sign-off."
+              echo "  Expected trailer: $EXPECTED"
+              echo "  Commit message:"
+              printf '%s\n' "$MSG" | sed 's/^/    /'
+              FAILED=1
+            else
+              echo "OK $SHA — $EXPECTED"
+            fi
+          done < <(git log --format='%H' "$BASE..$HEAD")
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "One or more commits are missing the DCO sign-off."
+            echo "Fix by amending the commits with: git commit --amend -s"
+            echo "Or for a series: git rebase --signoff $BASE"
+            echo "Then force-push the branch."
+            exit 1
+          fi
+
+          echo ""
+          echo "All commits DCO-signed."
