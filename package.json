@@ -1,6 +1,6 @@
 {
   "name": "deny-sh",
-  "version": "1.0.0",
+  "version": "2.0.2",
   "description": "Deniable encryption. One ciphertext, two passwords, two completely different plaintexts.",
   "type": "module",
   "main": "dist/src/index.js",
@@ -21,13 +21,18 @@
     "dist/src/core.d.ts",
     "dist/src/cli.js",
     "dist/src/cli.d.ts",
+    "dist/src/record.js",
+    "dist/src/record.d.ts",
+    "dist/src/record-decoy-generators.js",
+    "dist/src/record-decoy-generators.d.ts",
     "dist/src/commands/**/*.js",
     "dist/src/commands/**/*.d.ts",
     "dist/src/utils/**/*.js",
     "dist/src/utils/**/*.d.ts",
+    "dist/src/decoy-engine/**/*.js",
+    "dist/src/decoy-engine/**/*.d.ts",
     "README.md",
-    "LICENSE",
-    "COMMERCIAL-LICENSE.md"
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
@@ -43,7 +48,8 @@
     "deniable",
     "plausible-deniability",
     "aes-256",
-    "scrypt",
+    "argon2",
+    "argon2id",
     "privacy",
     "cryptography",
     "duress",
@@ -52,15 +58,18 @@
   "homepage": "https://deny.sh",
   "repository": {
     "type": "git",
-    "url": "https://github.com/deny-sh-crypto/deny-js"
+    "url": "git+https://github.com/deny-sh-crypto/deny-rs.git"
   },
   "bugs": {
-    "url": "https://github.com/deny-sh-crypto/deny-js/issues"
+    "url": "https://deny.sh/contact"
   },
   "author": "deny.sh",
-  "license": "AGPL-3.0-or-later",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.12.0"
   },
   "devDependencies": {
     "@types/node": "^25.6.2",

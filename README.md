@@ -1,12 +1,12 @@
 # deny-sh
 
-Deniable encryption. One ciphertext, two passwords, two completely different plaintexts. Both mathematically valid. No way to prove which one is real.
+Deniable encryption. One ciphertext, two passwords, two completely different plaintexts. Both mathematically valid. When the bytes leak, what leaks is the decoy.
 
 **[deny.sh](https://deny.sh)** · [Whitepaper](https://deny.sh/whitepaper) · [Verify it yourself](https://deny.sh/verify) · [Other SDKs](https://deny.sh/sdks)
 
 ## What this is
 
-The TypeScript / Node.js SDK + CLI for deny.sh.
+The TypeScript / Node.js SDK + CLI for deny.sh, the [deniability infrastructure](https://deny.sh). This package is the **Encrypt pillar**: the cryptographic primitive, Apache 2.0, free for any use, embeddable in any product, proprietary or open.
 
 ```bash
 npm install deny-sh
@@ -27,7 +27,7 @@ Both decryptions succeed. Both produce valid output. There is no mathematical ma
 
 Under the hood:
 
-1. Key derivation via **scrypt** (N=16384, r=8, p=1) from two passwords
+1. Key derivation via **Argon2id** (t=3, m=64 MiB, p=1, v=0x13) from two passwords
 2. 4-byte LE length prefix + plaintext, XORed with random control data
 3. **AES-256-CTR** encryption
 4. Output: `salt (32B) | IV (16B) | ciphertext`
@@ -37,34 +37,54 @@ Creating a decoy is just running the maths in reverse with different plaintext. 
 ## Quick start
 
 ```typescript
-import { encrypt, decrypt, generateDeniableControl } from 'deny-sh';
+import {
+  encrypt,
+  decrypt,
+  generateDeniableControl,
+  generateControlData,
+} from 'deny-sh';
 
-const real    = Buffer.from('the actual secret');
-const decoy   = Buffer.from('a plausible cover story');
-const realPw  = 'real password';
-const decoyPw = 'duress password';
+const real  = new TextEncoder().encode('the actual secret');
+const decoy = new TextEncoder().encode('a plausible cover story');
+const password1 = 'real password';
+const password2 = 'duress password';
 
-// Encrypt the real plaintext, generate a decoy control file
-const { ciphertext, control: realControl } = encrypt(real, realPw);
-const decoyControl = generateDeniableControl(ciphertext, decoy, decoyPw);
+// 1. Allocate random control data sized to the inner payload (plaintext + 4 bytes)
+const controlData = generateControlData(real.length + 4);
+
+// 2. Encrypt the real plaintext
+const { ciphertext } = encrypt(real, { password1, password2, controlData });
+
+// 3. Derive a decoy control file that decrypts the SAME ciphertext to the decoy
+const { controlData: decoyControl } = generateDeniableControl(
+  ciphertext,
+  password1,
+  password2,
+  decoy
+);
 
 // Both decryptions succeed
-const out1 = decrypt(ciphertext, realControl,  realPw);   // → real
-const out2 = decrypt(ciphertext, decoyControl, decoyPw);  // → decoy
+const { plaintext: outReal  } = decrypt(ciphertext, { password1, password2, controlData });
+const { plaintext: outDecoy } = decrypt(ciphertext, { password1, password2, controlData: decoyControl });
 ```
 
-The `realControl` and `decoyControl` blobs are indistinguishable. Whoever holds the ciphertext can be presented with either control file plus the matching password and will decrypt to a valid plaintext. There is no way for them to know which one came first.
+The `controlData` and `decoyControl` blobs are indistinguishable. Whoever holds the ciphertext can be presented with either control file plus the matching passwords and will decrypt to a valid plaintext. There is no way for them to know which one came first.
+
+The primitive is intentionally unauthenticated. Wrong passwords return garbage, not an error. Add a caller-side integrity check (magic bytes plus a SHA-256 fingerprint on the plaintext) if you need decryption to fail loudly on the wrong inputs. See <https://deny.sh/security> for the construction write-up.
 
 ## CLI
 
 ```bash
-deny-sh protect <file> --decoy <decoy-file>   # encrypt with a decoy
-deny-sh verify  <file>                         # check a ciphertext+control pair
+deny-sh protect                                # interactive seed-phrase protection wizard
 deny-sh init                                   # set up .deny/ in cwd
-deny-sh backup ...                             # backup helpers (S3, rclone)
-deny-sh vault  ...                             # local vault management
-deny-sh env    ...                             # encrypted .env handling
-deny-sh status                                 # show current .deny/ state
+deny-sh env protect .env                       # encrypt a .env file -> .env.deny
+deny-sh env restore .env.deny                  # restore an encrypted .env file
+deny-sh vault set|get|list|delete KEY [value]  # local encrypted key-value store
+deny-sh 1p push|pull|list|status               # 1Password integration
+deny-sh bw push|pull|list|status               # Bitwarden integration
+deny-sh backup push|pull|list|config|auto      # cloud backup helpers (S3, rclone)
+deny-sh verify                                 # run encryption/deniability test suite
+deny-sh status                                 # show .deny/ state and version info
 ```
 
 Run `deny-sh --help` for the full surface.
@@ -100,11 +120,16 @@ It is **not** designed to resist an adaptive adversary who can compel you to per
 
 ## License
 
-Dual-licensed:
+**Apache License 2.0**. See [LICENSE](LICENSE).
 
-- **AGPL-3.0-or-later** for open-source use. See [LICENSE](LICENSE).
-- **Commercial license** available for proprietary integrations. See [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) and email `licensing@deny.sh`.
+Free for commercial and proprietary use. No copyleft, no attribution beyond the standard Apache notice, no legal review required for embedding in closed-source projects.
+
+The deny.sh application layer (vault, dead-man's switch, MCP server, hosted API, web UI) remains under AGPL-3.0. The cryptographic primitive in this SDK is Apache 2.0. See [deny.sh/licensing](https://deny.sh/licensing) for the full split.
 
 ## Audit status
 
-External cryptographic audit in scoping for Q3 2026. Results will be published when complete. Until then: read the code, run the verification suite, read the whitepaper, draw your own conclusions.
+External cryptographic audit is on the roadmap. Firm and scope will be announced once engaged. Until then: read the code, run the verification suite, read the whitepaper, draw your own conclusions.
+
+## Reporting vulnerabilities
+
+Found a bug in the crypto, the SDK, or the CLI? Email security@deny.sh (PGP fingerprint and disclosure policy at [deny.sh/disclosure](https://deny.sh/disclosure)). Please give us a reasonable window before public disclosure.

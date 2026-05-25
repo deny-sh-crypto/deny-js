@@ -5,13 +5,15 @@
 
 import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'node:crypto';
+import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import { argon2id } from 'hash-wasm';
 import { banner, success, warn, info, step, table, bold, dim, red, green } from '../utils/display.js';
 import { hiddenInput, confirmedPassword } from '../utils/prompts.js';
 import { findDenyDir, ensureDenyDir, ensureGitignore, VAULT_FILE } from '../utils/dotdeny.js';
 
 // --- Vault format ---
-// File = Salt(32) + IV(16) + AES-256-CTR(JSON)
+// File = Version(1) + Salt(32) + IV(16) + AES-256-CTR(JSON)
+// Version 0x02 = Argon2id (t=3, m=64 MiB, p=1)
 // JSON = { entries: { KEY: { value, created, updated, type } } }
 
 interface VaultEntry {
@@ -25,29 +27,51 @@ interface VaultData {
   entries: Record<string, VaultEntry>;
 }
 
+const VAULT_VERSION = 0x02; // 0x02 = Argon2id
 const SALT_LEN = 32;
 const IV_LEN = 16;
+const HEADER_LEN = 1 + SALT_LEN + IV_LEN; // version + salt + iv
 
-function deriveVaultKey(password: string, salt: Buffer): Buffer {
-  return scryptSync(password, salt, 32, { N: 2 ** 14, r: 8, p: 1 }) as Buffer;
+async function deriveVaultKey(password: string, salt: Buffer): Promise<Uint8Array> {
+  return argon2id({
+    password: Buffer.from(password, 'utf8'),
+    salt,
+    parallelism: 1,
+    iterations: 3,
+    memorySize: 65536, // 64 MiB in KiB
+    hashLength: 32,
+    outputType: 'binary',
+  });
 }
 
-function encryptVault(data: VaultData, password: string): Buffer {
+export async function encryptVault(data: VaultData, password: string): Promise<Buffer> {
   const salt = randomBytes(SALT_LEN);
   const iv   = randomBytes(IV_LEN);
-  const key  = deriveVaultKey(password, salt);
+  const key  = await deriveVaultKey(password, salt);
   const json = Buffer.from(JSON.stringify(data), 'utf8');
-  const cipher = createCipheriv('aes-256-ctr', key, iv);
+  const cipher = createCipheriv('aes-256-ctr', Buffer.from(key), iv);
   const encrypted = Buffer.concat([cipher.update(json), cipher.final()]);
-  return Buffer.concat([salt, iv, encrypted]);
+  return Buffer.concat([
+    Buffer.from([VAULT_VERSION]),
+    salt,
+    iv,
+    encrypted,
+  ]);
 }
 
-function decryptVault(raw: Buffer, password: string): VaultData {
-  const salt = raw.subarray(0, SALT_LEN);
-  const iv   = raw.subarray(SALT_LEN, SALT_LEN + IV_LEN);
-  const data = raw.subarray(SALT_LEN + IV_LEN);
-  const key  = deriveVaultKey(password, salt);
-  const decipher = createDecipheriv('aes-256-ctr', key, iv);
+export async function decryptVault(raw: Buffer, password: string): Promise<VaultData> {
+  if (raw.length < HEADER_LEN + 1) {
+    throw new Error('vault file too short');
+  }
+  const version = raw[0]!;
+  if (version !== VAULT_VERSION) {
+    throw new Error(`unsupported vault version: 0x${version.toString(16).padStart(2, '0')}`);
+  }
+  const salt = raw.subarray(1, 1 + SALT_LEN);
+  const iv   = raw.subarray(1 + SALT_LEN, HEADER_LEN);
+  const data = raw.subarray(HEADER_LEN);
+  const key  = await deriveVaultKey(password, salt);
+  const decipher = createDecipheriv('aes-256-ctr', Buffer.from(key), iv);
   const json = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
   return JSON.parse(json) as VaultData;
 }
@@ -68,15 +92,19 @@ async function loadVault(vaultPath: string, password: string): Promise<VaultData
   if (!existsSync(vaultPath)) return { entries: {} };
   const raw = readFileSync(vaultPath);
   try {
-    return decryptVault(raw, password);
-  } catch {
-    console.error(`  ${red('✗')} Wrong vault password or corrupted vault.`);
+    return await decryptVault(raw, password);
+  } catch (e: unknown) {
+    const msg =
+      e instanceof Error && e.message.startsWith('unsupported vault version')
+        ? `${e.message}. You may be running an older deny-sh. Try upgrading.`
+        : 'Wrong vault password or corrupted vault.';
+    console.error(`  ${red('✗')} ${msg}`);
     process.exit(1);
   }
 }
 
-function saveVault(vaultPath: string, data: VaultData, password: string): void {
-  const encrypted = encryptVault(data, password);
+async function saveVault(vaultPath: string, data: VaultData, password: string): Promise<void> {
+  const encrypted = await encryptVault(data, password);
   writeFileSync(vaultPath, encrypted);
 }
 
@@ -109,7 +137,7 @@ async function cmdVaultSet(key: string, value: string): Promise<void> {
     type,
   };
 
-  saveVault(vaultPath, vault, password);
+  await saveVault(vaultPath, vault, password);
   success(`Stored: ${bold(key)} (${type})`);
 
   // Ensure gitignore
@@ -186,7 +214,7 @@ async function cmdVaultDelete(key: string): Promise<void> {
   }
 
   delete vault.entries[key];
-  saveVault(vaultPath, vault, password);
+  await saveVault(vaultPath, vault, password);
   success(`Deleted: ${bold(key)}`);
 }
 

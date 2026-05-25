@@ -30,7 +30,7 @@ function validateWordCount(phrase: string): string | null {
   return null;
 }
 
-/** Simulate scrypt progress bar (scrypt is synchronous in node:crypto, so we animate before/after). */
+/** Simulate Argon2id progress bar while the async KDF runs. */
 async function animateProgress(label: string): Promise<void> {
   process.stdout.write('\n');
   const steps = [0, 10, 25, 40, 55, 70, 85, 95, 100];
@@ -157,7 +157,7 @@ export async function cmdProtect(_flags: Record<string, string>): Promise<void> 
 
   const plaintext = new TextEncoder().encode(seedPhrase.trim());
   const controlData = generateControlData(Math.max(plaintext.length + 4, 512));
-  const { ciphertext } = encrypt(plaintext, {
+  const { ciphertext } = await encrypt(plaintext, {
     password1: realPw1,
     password2: realPw1,
     controlData,
@@ -173,8 +173,11 @@ export async function cmdProtect(_flags: Record<string, string>): Promise<void> 
 
   if (addDecoy) {
     const decoyPlaintext = new TextEncoder().encode(decoyMessage.trim());
-    const { controlData: decoyControl } = generateDeniableControl(
-      ciphertext, realPw1, realPw1, decoyPlaintext
+    // Use DECOY passwords for decoy control — so only decoyPw1 unlocks the decoy.
+    // Using realPw1 here (the original bug) meant the decoy was readable with
+    // the real password, defeating the two-password deniability model.
+    const { controlData: decoyControl } = await generateDeniableControl(
+      ciphertext, decoyPw1, decoyPw1, decoyPlaintext
     );
     writeFileSync(resolve(controlDecoy), decoyControl);
     files.push({ path: resolve(controlDecoy), name: controlDecoy });

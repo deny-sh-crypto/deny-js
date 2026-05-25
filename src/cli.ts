@@ -113,7 +113,7 @@ async function cmdEncrypt(flags: Record<string, string>): Promise<void> {
     console.log(`Generated control file: ${controlOutPath} (${controlData.length} bytes)`);
   }
 
-  const { ciphertext } = encrypt(plaintext, { password1: pw1, password2: pw2, controlData });
+  const { ciphertext } = await encrypt(plaintext, { password1: pw1, password2: pw2, controlData });
   writeFileSync(resolve(outputPath), ciphertext);
   console.log(`Encrypted: ${outputPath} (${ciphertext.length} bytes)`);
 }
@@ -135,7 +135,7 @@ async function cmdDecrypt(flags: Record<string, string>): Promise<void> {
   const ciphertext = new Uint8Array(readFileSync(resolve(inputPath)));
   const controlData = new Uint8Array(readFileSync(resolve(controlPath)));
 
-  const { plaintext } = decrypt(ciphertext, { password1: pw1, password2: pw2, controlData });
+  const { plaintext } = await decrypt(ciphertext, { password1: pw1, password2: pw2, controlData });
   const text = new TextDecoder().decode(plaintext);
 
   if (flags['o'] === '-' || flags['output'] === '-') {
@@ -148,7 +148,7 @@ async function cmdDecrypt(flags: Record<string, string>): Promise<void> {
   }
 }
 
-function cmdDeny(flags: Record<string, string>): void {
+async function cmdDeny(flags: Record<string, string>): Promise<void> {
   const inputPath = requireFlag(flags, 'i', 'Input file');
   const pw1 = requireFlag(flags, 'p1', 'Password 1');
   const pw2 = requireFlag(flags, 'p2', 'Password 2');
@@ -158,7 +158,7 @@ function cmdDeny(flags: Record<string, string>): void {
   const ciphertext = new Uint8Array(readFileSync(resolve(inputPath)));
   const desiredPlaintext = new TextEncoder().encode(fakeMessage);
 
-  const { controlData } = generateDeniableControl(ciphertext, pw1, pw2, desiredPlaintext);
+  const { controlData } = await generateDeniableControl(ciphertext, pw1, pw2, desiredPlaintext);
   writeFileSync(resolve(outputPath), controlData);
   console.log(`Deniable control file: ${outputPath} (${controlData.length} bytes)`);
   console.log(`\nDecrypting with this control file will produce:\n"${fakeMessage}"`);
@@ -200,18 +200,18 @@ async function cmdTextEncrypt(flags: Record<string, string>): Promise<void> {
     console.error(`Generated control file: ${controlOutPath}`);
   }
 
-  const hex = encryptText(message, pw1, pw2, controlData);
+  const hex = await encryptText(message, pw1, pw2, controlData);
   console.log(hex);
 }
 
-function cmdTextDecrypt(flags: Record<string, string>): void {
+async function cmdTextDecrypt(flags: Record<string, string>): Promise<void> {
   const hex = requireFlag(flags, 'i', 'Hex ciphertext');
   const pw1 = requireFlag(flags, 'p1', 'Password 1');
   const pw2 = requireFlag(flags, 'p2', 'Password 2');
   const controlPath = requireFlag(flags, 'c', 'Control file');
 
   const controlData = new Uint8Array(readFileSync(resolve(controlPath)));
-  const message = decryptText(hex, pw1, pw2, controlData);
+  const message = await decryptText(hex, pw1, pw2, controlData);
   console.log(message);
 }
 
@@ -242,7 +242,7 @@ async function cmdDemo(): Promise<void> {
 
   const plaintext = new TextEncoder().encode(realMessage);
   const controlData = generateControlData(plaintext.length + 4);
-  const { ciphertext } = encrypt(plaintext, { password1: pw1, password2: pw2, controlData });
+  const { ciphertext } = await encrypt(plaintext, { password1: pw1, password2: pw2, controlData });
   const hexSlice = Buffer.from(ciphertext).toString('hex').slice(0, 64);
   console.log(`\n  ${dim('Ciphertext:')} ${hexSlice}...`);
   console.log(`  ${dim('           ')} (${ciphertext.length} bytes total)\n`);
@@ -250,7 +250,7 @@ async function cmdDemo(): Promise<void> {
 
   // Step 2: Normal decrypt
   console.log(`  ${bold('Step 2:')} Decrypt with real control file:`);
-  const { plaintext: decrypted } = decrypt(ciphertext, { password1: pw1, password2: pw2, controlData });
+  const { plaintext: decrypted } = await decrypt(ciphertext, { password1: pw1, password2: pw2, controlData });
   await sleep(400);
   console.log(`  ${green('→')} "${new TextDecoder().decode(decrypted)}"\n`);
   await sleep(600);
@@ -258,14 +258,14 @@ async function cmdDemo(): Promise<void> {
   // Step 3: Generate deniable control
   console.log(`  ${bold('Step 3:')} Generate deniable control file for fake message...`);
   const fakeBytes = new TextEncoder().encode(fakeMessage);
-  const { controlData: fakeControl } = generateDeniableControl(ciphertext, pw1, pw2, fakeBytes);
+  const { controlData: fakeControl } = await generateDeniableControl(ciphertext, pw1, pw2, fakeBytes);
   await sleep(400);
   console.log(`  ${dim('→')} New control file created (looks identical to real one)\n`);
   await sleep(400);
 
   // Step 4: Decrypt with fake control
   console.log(`  ${bold('Step 4:')} Decrypt same ciphertext with fake control file:`);
-  const { plaintext: fakeDecrypted } = decrypt(ciphertext, { password1: pw1, password2: pw2, controlData: fakeControl });
+  const { plaintext: fakeDecrypted } = await decrypt(ciphertext, { password1: pw1, password2: pw2, controlData: fakeControl });
   const fakeResult = new TextDecoder().decode(fakeDecrypted.slice(0, fakeBytes.length));
   await sleep(400);
   console.log(`  ${yellow('→')} "${fakeResult}"\n`);
@@ -338,6 +338,8 @@ function showHelp(): void {
     deny-sh env protect .env
     deny-sh vault set AWS_KEY sk-abc123
     deny-sh verify
+    deny-sh verify-receipt receipt.json
+    deny-sh verify-receipt receipt.json --export-openssl ./bundle
 `);
 }
 
@@ -349,10 +351,10 @@ const { command, subArgs, flags } = parseArgs(process.argv.slice(2));
   switch (command) {
     case 'encrypt':       await cmdEncrypt(flags); break;
     case 'decrypt':       await cmdDecrypt(flags); break;
-    case 'deny':          cmdDeny(flags); break;
+    case 'deny':          await cmdDeny(flags); break;
     case 'generate':      cmdGenerate(flags); break;
     case 'text-encrypt':  await cmdTextEncrypt(flags); break;
-    case 'text-decrypt':  cmdTextDecrypt(flags); break;
+    case 'text-decrypt':  await cmdTextDecrypt(flags); break;
     case 'demo':          await cmdDemo(); break;
 
     case 'protect': {
@@ -378,6 +380,11 @@ const { command, subArgs, flags } = parseArgs(process.argv.slice(2));
     case 'verify': {
       const { cmdVerify } = await import('./commands/verify.js');
       await cmdVerify(flags);
+      break;
+    }
+    case 'verify-receipt': {
+      const { cmdVerifyReceipt } = await import('./commands/verify-receipt.js');
+      await cmdVerifyReceipt(subArgs, flags);
       break;
     }
     case 'status': {

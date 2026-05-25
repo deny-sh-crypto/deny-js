@@ -91,7 +91,7 @@ describe('VERIFICATION SUITE', () => {
 
   describe('1. Statistical Indistinguishability', () => {
 
-    it('deniable control files pass chi-squared test (1,000 samples)', () => {
+    it('deniable control files pass chi-squared test (1,000 samples)', async () => {
       const realMessage = new TextEncoder().encode('The launch code is ALPHA-7749');
       const fakeMessage = new TextEncoder().encode('Dinner reservation at 8pm');
       const pw1 = 'test-password-1';
@@ -102,11 +102,11 @@ describe('VERIFICATION SUITE', () => {
 
       // Generate one ciphertext
       const controlData = generateControlData(256);
-      const { ciphertext } = encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
+      const { ciphertext } = await encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
 
       // Generate many deniable control files and test each
       for (let i = 0; i < SAMPLES; i++) {
-        const { controlData: fakeControl } = generateDeniableControl(
+        const { controlData: fakeControl } = await generateDeniableControl(
           ciphertext, pw1, pw2, fakeMessage
         );
         chiValues.push(chiSquared(fakeControl));
@@ -122,17 +122,17 @@ describe('VERIFICATION SUITE', () => {
         `Chi-squared pass rate ${(passRate * 100).toFixed(1)}% is below 98% threshold`);
     });
 
-    it('deniable control files have near-maximum entropy', () => {
+    it('deniable control files have near-maximum entropy', async () => {
       const realMessage = new TextEncoder().encode('Secret project codename: NEBULA');
       const fakeMessage = new TextEncoder().encode('Team standup moved to 10am');
       const pw1 = 'entropy-test-1';
       const pw2 = 'entropy-test-2';
       const controlData = generateControlData(512);
-      const { ciphertext } = encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
+      const { ciphertext } = await encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
 
       const entropies: number[] = [];
       for (let i = 0; i < 1000; i++) {
-        const { controlData: fakeControl } = generateDeniableControl(
+        const { controlData: fakeControl } = await generateDeniableControl(
           ciphertext, pw1, pw2, fakeMessage
         );
         entropies.push(entropy(fakeControl));
@@ -145,17 +145,17 @@ describe('VERIFICATION SUITE', () => {
         `Average entropy ${avgEntropy.toFixed(3)} is too low (expected > 7.0)`);
     });
 
-    it('deniable control files pass Kolmogorov-Smirnov test', () => {
+    it('deniable control files pass Kolmogorov-Smirnov test', async () => {
       const realMessage = new TextEncoder().encode('Wire $50K to account 4419-2281');
       const fakeMessage = new TextEncoder().encode('Grocery list: eggs milk bread');
       const pw1 = 'ks-test-1';
       const pw2 = 'ks-test-2';
       const controlData = generateControlData(512);
-      const { ciphertext } = encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
+      const { ciphertext } = await encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
 
       const ksValues: number[] = [];
       for (let i = 0; i < 1000; i++) {
-        const { controlData: fakeControl } = generateDeniableControl(
+        const { controlData: fakeControl } = await generateDeniableControl(
           ciphertext, pw1, pw2, fakeMessage
         );
         ksValues.push(ksStatistic(fakeControl));
@@ -168,7 +168,7 @@ describe('VERIFICATION SUITE', () => {
         `Average KS statistic ${avgKS.toFixed(4)} suggests non-uniformity`);
     });
 
-    it('real vs deniable control files are statistically indistinguishable', () => {
+    it('real vs deniable control files are statistically indistinguishable', async () => {
       const pw1 = 'compare-1';
       const pw2 = 'compare-2';
       const realMessage = new TextEncoder().encode('Sell all shares at market open');
@@ -186,8 +186,8 @@ describe('VERIFICATION SUITE', () => {
         realChis.push(chiSquared(realControl));
 
         // Deniable control file
-        const { ciphertext } = encrypt(realMessage, { password1: pw1, password2: pw2, controlData: realControl });
-        const { controlData: fakeControl } = generateDeniableControl(
+        const { ciphertext } = await encrypt(realMessage, { password1: pw1, password2: pw2, controlData: realControl });
+        const { controlData: fakeControl } = await generateDeniableControl(
           ciphertext, pw1, pw2, fakeMessage
         );
         fakeEntropies.push(entropy(fakeControl));
@@ -209,17 +209,17 @@ describe('VERIFICATION SUITE', () => {
         `Chi-squared ratio ${chiRatio.toFixed(3)} suggests distinguishability`);
     });
 
-    it('serial correlation is near zero (no byte-to-byte patterns)', () => {
+    it('serial correlation is near zero (no byte-to-byte patterns)', async () => {
       const pw1 = 'serial-1';
       const pw2 = 'serial-2';
       const realMessage = new TextEncoder().encode('The password is hunter2');
       const fakeMessage = new TextEncoder().encode('Meeting room B at 3pm');
       const controlData = generateControlData(256);
-      const { ciphertext } = encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
+      const { ciphertext } = await encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
 
       const correlations: number[] = [];
       for (let i = 0; i < 1000; i++) {
-        const { controlData: fakeControl } = generateDeniableControl(
+        const { controlData: fakeControl } = await generateDeniableControl(
           ciphertext, pw1, pw2, fakeMessage
         );
         correlations.push(serialCorrelation(fakeControl));
@@ -239,13 +239,13 @@ describe('VERIFICATION SUITE', () => {
 
   describe('2. Ciphertext Invariance', () => {
 
-    it('ciphertext is identical regardless of which control file is used', () => {
+    it('ciphertext is identical regardless of which control file is used', async () => {
       const pw1 = 'invariance-1';
       const pw2 = 'invariance-2';
       const realMessage = new TextEncoder().encode('Real secret message');
 
       const controlData = generateControlData(256);
-      const { ciphertext } = encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
+      const { ciphertext } = await encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
 
       // Generate 100 different deniable control files
       const fakeMessages = [
@@ -258,12 +258,12 @@ describe('VERIFICATION SUITE', () => {
 
       for (const fakeMsg of fakeMessages) {
         const fakeBytes = new TextEncoder().encode(fakeMsg);
-        const { controlData: fakeControl } = generateDeniableControl(
+        const { controlData: fakeControl } = await generateDeniableControl(
           ciphertext, pw1, pw2, fakeBytes
         );
 
         // Decrypt with fake control - should get fake message
-        const { plaintext } = decrypt(ciphertext, {
+        const { plaintext } = await decrypt(ciphertext, {
           password1: pw1, password2: pw2, controlData: fakeControl,
         });
         assert.strictEqual(
@@ -274,18 +274,18 @@ describe('VERIFICATION SUITE', () => {
       }
 
       // Decrypt with real control - should still get real message
-      const { plaintext: real } = decrypt(ciphertext, {
+      const { plaintext: real } = await decrypt(ciphertext, {
         password1: pw1, password2: pw2, controlData,
       });
       assert.strictEqual(new TextDecoder().decode(real), 'Real secret message');
     });
 
-    it('no bit of ciphertext depends on which control file will be generated later', () => {
+    it('no bit of ciphertext depends on which control file will be generated later', async () => {
       const pw1 = 'bitwise-1';
       const pw2 = 'bitwise-2';
       const message = new TextEncoder().encode('Test message for bit analysis');
       const controlData = generateControlData(256);
-      const { ciphertext } = encrypt(message, { password1: pw1, password2: pw2, controlData });
+      const { ciphertext } = await encrypt(message, { password1: pw1, password2: pw2, controlData });
 
       const ctHash = createHash('sha256').update(ciphertext).digest('hex');
 
@@ -309,21 +309,21 @@ describe('VERIFICATION SUITE', () => {
 
   describe('3. Length Independence', () => {
 
-    it('same ciphertext decrypts to messages of different lengths', () => {
+    it('same ciphertext decrypts to messages of different lengths', async () => {
       const pw1 = 'length-1';
       const pw2 = 'length-2';
       const realMessage = new TextEncoder().encode('This is a longer secret message with more content');
       const controlData = generateControlData(256);
-      const { ciphertext } = encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
+      const { ciphertext } = await encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
 
       const ctLength = ciphertext.length;
 
       // Short fake message
       const shortFake = new TextEncoder().encode('Hi');
-      const { controlData: shortControl } = generateDeniableControl(
+      const { controlData: shortControl } = await generateDeniableControl(
         ciphertext, pw1, pw2, shortFake
       );
-      const { plaintext: shortResult } = decrypt(ciphertext, {
+      const { plaintext: shortResult } = await decrypt(ciphertext, {
         password1: pw1, password2: pw2, controlData: shortControl,
       });
       assert.strictEqual(new TextDecoder().decode(shortResult), 'Hi');
@@ -331,17 +331,17 @@ describe('VERIFICATION SUITE', () => {
 
       // Medium fake message
       const medFake = new TextEncoder().encode('Medium length message');
-      const { controlData: medControl } = generateDeniableControl(
+      const { controlData: medControl } = await generateDeniableControl(
         ciphertext, pw1, pw2, medFake
       );
-      const { plaintext: medResult } = decrypt(ciphertext, {
+      const { plaintext: medResult } = await decrypt(ciphertext, {
         password1: pw1, password2: pw2, controlData: medControl,
       });
       assert.strictEqual(new TextDecoder().decode(medResult), 'Medium length message');
       assert.strictEqual(ciphertext.length, ctLength, 'Ciphertext length changed');
     });
 
-    it('length prefix is inside encrypted zone (not visible in ciphertext)', () => {
+    it('length prefix is inside encrypted zone (not visible in ciphertext)', async () => {
       const pw1 = 'prefix-1';
       const pw2 = 'prefix-2';
 
@@ -352,7 +352,7 @@ describe('VERIFICATION SUITE', () => {
       for (const len of lengths) {
         const msg = new Uint8Array(len).fill(0x41); // 'A' repeated
         const controlData = generateControlData(256);
-        const { ciphertext } = encrypt(msg, { password1: pw1, password2: pw2, controlData });
+        const { ciphertext } = await encrypt(msg, { password1: pw1, password2: pw2, controlData });
         ciphertexts.push(ciphertext);
 
         // Verify ciphertext length = HEADER + len + 4 (length prefix)
@@ -372,7 +372,7 @@ describe('VERIFICATION SUITE', () => {
 
   describe('4. Cross-implementation (hex mode)', () => {
 
-    it('encryptText/decryptText round-trip', () => {
+    it('encryptText/decryptText round-trip', async () => {
       const controlData = generateControlData(256);
       const messages = [
         'Hello world',
@@ -382,15 +382,15 @@ describe('VERIFICATION SUITE', () => {
       ];
 
       for (const msg of messages) {
-        const hex = encryptText(msg, 'pw1', 'pw2', controlData);
-        const result = decryptText(hex, 'pw1', 'pw2', controlData);
+        const hex = await encryptText(msg, 'pw1', 'pw2', controlData);
+        const result = await decryptText(hex, 'pw1', 'pw2', controlData);
         assert.strictEqual(result, msg, `Round-trip failed for: ${msg.slice(0, 30)}`);
       }
     });
 
-    it('hex output is valid lowercase hex', () => {
+    it('hex output is valid lowercase hex', async () => {
       const controlData = generateControlData(256);
-      const hex = encryptText('test', 'a', 'b', controlData);
+      const hex = await encryptText('test', 'a', 'b', controlData);
       assert.match(hex, /^[0-9a-f]+$/, 'Output contains non-hex characters');
       assert.strictEqual(hex.length % 2, 0, 'Hex output has odd length');
     });
@@ -403,40 +403,40 @@ describe('VERIFICATION SUITE', () => {
 
   describe('5. Known-Answer Tests (KATs)', () => {
 
-    it('deriveKey is deterministic for same inputs', () => {
+    it('deriveKey is deterministic for same inputs', async () => {
       const salt = new Uint8Array(32).fill(0xAA);
-      const key1 = deriveKey('password1', 'password2', salt);
-      const key2 = deriveKey('password1', 'password2', salt);
+      const key1 = await deriveKey('password1', 'password2', salt);
+      const key2 = await deriveKey('password1', 'password2', salt);
       assert.deepStrictEqual(key1, key2, 'Same inputs produced different keys');
     });
 
-    it('deriveKey changes with different passwords', () => {
+    it('deriveKey changes with different passwords', async () => {
       const salt = new Uint8Array(32).fill(0xBB);
-      const key1 = deriveKey('alpha', 'bravo', salt);
-      const key2 = deriveKey('alpha', 'charlie', salt);
-      const key3 = deriveKey('delta', 'bravo', salt);
+      const key1 = await deriveKey('alpha', 'bravo', salt);
+      const key2 = await deriveKey('alpha', 'charlie', salt);
+      const key3 = await deriveKey('delta', 'bravo', salt);
 
       assert.notDeepStrictEqual(key1, key2, 'Different pw2 produced same key');
       assert.notDeepStrictEqual(key1, key3, 'Different pw1 produced same key');
       assert.notDeepStrictEqual(key2, key3, 'Different passwords produced same key');
     });
 
-    it('deriveKey changes with different salts', () => {
+    it('deriveKey changes with different salts', async () => {
       const salt1 = new Uint8Array(32).fill(0x01);
       const salt2 = new Uint8Array(32).fill(0x02);
-      const key1 = deriveKey('same', 'passwords', salt1);
-      const key2 = deriveKey('same', 'passwords', salt2);
+      const key1 = await deriveKey('same', 'passwords', salt1);
+      const key2 = await deriveKey('same', 'passwords', salt2);
       assert.notDeepStrictEqual(key1, key2, 'Different salts produced same key');
     });
 
-    it('password order matters (pw1/pw2 not interchangeable)', () => {
+    it('password order matters (pw1/pw2 not interchangeable)', async () => {
       const salt = new Uint8Array(32).fill(0xCC);
-      const key1 = deriveKey('alpha', 'bravo', salt);
-      const key2 = deriveKey('bravo', 'alpha', salt);
+      const key1 = await deriveKey('alpha', 'bravo', salt);
+      const key2 = await deriveKey('bravo', 'alpha', salt);
       assert.notDeepStrictEqual(key1, key2, 'Swapped passwords produced same key');
     });
 
-    it('encrypt with fixed salt produces deterministic intermediate', () => {
+    it('encrypt with fixed salt produces deterministic intermediate', async () => {
       // This verifies the algorithm step by step
       const pw1 = 'fixed-pw1';
       const pw2 = 'fixed-pw2';
@@ -444,13 +444,13 @@ describe('VERIFICATION SUITE', () => {
       const message = new TextEncoder().encode('Deterministic test');
 
       // Derive key manually
-      const key = deriveKey(pw1, pw2, salt);
+      const key = await deriveKey(pw1, pw2, salt);
       assert.strictEqual(key.length, 32, 'Key should be 32 bytes');
 
       // Key should be a specific value (record it)
       const keyHex = Buffer.from(key).toString('hex');
       // Re-derive and compare
-      const key2 = deriveKey(pw1, pw2, salt);
+      const key2 = await deriveKey(pw1, pw2, salt);
       assert.strictEqual(Buffer.from(key2).toString('hex'), keyHex, 'Key derivation not deterministic');
     });
   });
@@ -462,7 +462,7 @@ describe('VERIFICATION SUITE', () => {
 
   describe('6. Fuzz Testing (500 rounds)', () => {
 
-    it('encrypt -> deny -> decrypt with random inputs never fails', () => {
+    it('encrypt -> deny -> decrypt with random inputs never fails', async () => {
       let failures = 0;
       const ROUNDS = 500;
 
@@ -484,21 +484,21 @@ describe('VERIFICATION SUITE', () => {
           const controlData = generateControlData(msgLen + 4);
 
           // Encrypt
-          const { ciphertext } = encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
+          const { ciphertext } = await encrypt(realMessage, { password1: pw1, password2: pw2, controlData });
 
           // Decrypt with real control
-          const { plaintext: realResult } = decrypt(ciphertext, {
+          const { plaintext: realResult } = await decrypt(ciphertext, {
             password1: pw1, password2: pw2, controlData,
           });
           assert.deepStrictEqual(new Uint8Array(realResult), new Uint8Array(realMessage));
 
           // Generate deniable control
-          const { controlData: fakeControl } = generateDeniableControl(
+          const { controlData: fakeControl } = await generateDeniableControl(
             ciphertext, pw1, pw2, new Uint8Array(fakeMessage)
           );
 
           // Decrypt with fake control
-          const { plaintext: fakeResult } = decrypt(ciphertext, {
+          const { plaintext: fakeResult } = await decrypt(ciphertext, {
             password1: pw1, password2: pw2, controlData: fakeControl,
           });
           assert.deepStrictEqual(
@@ -514,7 +514,7 @@ describe('VERIFICATION SUITE', () => {
         `${failures}/${ROUNDS} rounds failed`);
     });
 
-    it('edge cases: single byte messages', () => {
+    it('edge cases: single byte messages', async () => {
       for (let b = 0; b < 256; b++) {
         const msg = new Uint8Array([b]);
         const fake = new Uint8Array([(b + 128) % 256]);
@@ -522,32 +522,32 @@ describe('VERIFICATION SUITE', () => {
         const pw2 = 'edge2';
         const controlData = generateControlData(8);
 
-        const { ciphertext } = encrypt(msg, { password1: pw1, password2: pw2, controlData });
-        const { plaintext } = decrypt(ciphertext, { password1: pw1, password2: pw2, controlData });
+        const { ciphertext } = await encrypt(msg, { password1: pw1, password2: pw2, controlData });
+        const { plaintext } = await decrypt(ciphertext, { password1: pw1, password2: pw2, controlData });
         assert.strictEqual(plaintext[0], b);
 
-        const { controlData: fc } = generateDeniableControl(ciphertext, pw1, pw2, fake);
-        const { plaintext: fr } = decrypt(ciphertext, { password1: pw1, password2: pw2, controlData: fc });
+        const { controlData: fc } = await generateDeniableControl(ciphertext, pw1, pw2, fake);
+        const { plaintext: fr } = await decrypt(ciphertext, { password1: pw1, password2: pw2, controlData: fc });
         assert.strictEqual(fr[0], (b + 128) % 256);
       }
     });
 
-    it('edge case: maximum length fake message (same size as real)', () => {
+    it('edge case: maximum length fake message (same size as real)', async () => {
       const msg = randomBytes(200);
       const fake = randomBytes(200); // Same length
       const pw1 = 'maxlen1';
       const pw2 = 'maxlen2';
       const controlData = generateControlData(256);
 
-      const { ciphertext } = encrypt(new Uint8Array(msg), {
+      const { ciphertext } = await encrypt(new Uint8Array(msg), {
         password1: pw1, password2: pw2, controlData,
       });
 
-      const { controlData: fakeControl } = generateDeniableControl(
+      const { controlData: fakeControl } = await generateDeniableControl(
         ciphertext, pw1, pw2, new Uint8Array(fake)
       );
 
-      const { plaintext } = decrypt(ciphertext, {
+      const { plaintext } = await decrypt(ciphertext, {
         password1: pw1, password2: pw2, controlData: fakeControl,
       });
       assert.deepStrictEqual(new Uint8Array(plaintext), new Uint8Array(fake));
@@ -561,7 +561,7 @@ describe('VERIFICATION SUITE', () => {
 
   describe('7. Security Properties', () => {
 
-    it('same plaintext + same passwords produce different ciphertext (random salt)', () => {
+    it('same plaintext + same passwords produce different ciphertext (random salt)', async () => {
       const msg = new TextEncoder().encode('Same message every time');
       const pw1 = 'same-pw1';
       const pw2 = 'same-pw2';
@@ -569,7 +569,7 @@ describe('VERIFICATION SUITE', () => {
 
       const ciphertexts = new Set<string>();
       for (let i = 0; i < 100; i++) {
-        const { ciphertext } = encrypt(msg, { password1: pw1, password2: pw2, controlData });
+        const { ciphertext } = await encrypt(msg, { password1: pw1, password2: pw2, controlData });
         ciphertexts.add(Buffer.from(ciphertext).toString('hex'));
       }
 
@@ -578,15 +578,15 @@ describe('VERIFICATION SUITE', () => {
         `Only ${ciphertexts.size}/100 unique ciphertexts (salt reuse detected)`);
     });
 
-    it('wrong password produces garbage, not an error', () => {
+    it('wrong password produces garbage, not an error', async () => {
       const msg = new TextEncoder().encode('Secret message');
       const controlData = generateControlData(256);
-      const { ciphertext } = encrypt(msg, {
+      const { ciphertext } = await encrypt(msg, {
         password1: 'right1', password2: 'right2', controlData,
       });
 
       // Wrong password should decrypt without error but produce garbage
-      const { plaintext } = decrypt(ciphertext, {
+      const { plaintext } = await decrypt(ciphertext, {
         password1: 'wrong1', password2: 'wrong2', controlData,
       });
 
@@ -596,16 +596,16 @@ describe('VERIFICATION SUITE', () => {
         'Wrong password decrypted to correct message');
     });
 
-    it('wrong control file produces different message, not an error', () => {
+    it('wrong control file produces different message, not an error', async () => {
       const msg = new TextEncoder().encode('Real secret');
       const controlData = generateControlData(256);
       const wrongControl = generateControlData(256);
 
-      const { ciphertext } = encrypt(msg, {
+      const { ciphertext } = await encrypt(msg, {
         password1: 'pw1', password2: 'pw2', controlData,
       });
 
-      const { plaintext } = decrypt(ciphertext, {
+      const { plaintext } = await decrypt(ciphertext, {
         password1: 'pw1', password2: 'pw2', controlData: wrongControl,
       });
 
@@ -614,14 +614,14 @@ describe('VERIFICATION SUITE', () => {
         'Wrong control file decrypted to correct message');
     });
 
-    it('header (salt + IV) is exactly 48 bytes', () => {
+    it('header (salt + IV) is exactly 48 bytes', async () => {
       assert.strictEqual(HEADER_LENGTH, 48);
       assert.strictEqual(SALT_LENGTH, 32);
       assert.strictEqual(IV_LENGTH, 16);
 
       const msg = new TextEncoder().encode('Test');
       const controlData = generateControlData(256);
-      const { ciphertext } = encrypt(msg, {
+      const { ciphertext } = await encrypt(msg, {
         password1: 'a', password2: 'b', controlData,
       });
 
@@ -629,11 +629,11 @@ describe('VERIFICATION SUITE', () => {
       assert.strictEqual(ciphertext.length, 56);
     });
 
-    it('ciphertext has high entropy (no plaintext patterns visible)', () => {
+    it('ciphertext has high entropy (no plaintext patterns visible)', async () => {
       // Encrypt a repetitive message
       const msg = new Uint8Array(500).fill(0x41); // AAAAAA...
       const controlData = generateControlData(512);
-      const { ciphertext } = encrypt(msg, {
+      const { ciphertext } = await encrypt(msg, {
         password1: 'ent1', password2: 'ent2', controlData,
       });
 
@@ -644,7 +644,7 @@ describe('VERIFICATION SUITE', () => {
         `Ciphertext entropy ${e.toFixed(3)} too low (plaintext patterns leaking)`);
     });
 
-    it('two control files for same ciphertext are not correlated', () => {
+    it('two control files for same ciphertext are not correlated', async () => {
       // Use a long real message so the resulting ciphertext can hold long fake
       // messages (>= 256 bytes each). Short fakes against the same RNG seed
       // share too much structural overhead to converge above the entropy
@@ -654,13 +654,13 @@ describe('VERIFICATION SUITE', () => {
       const pw1 = 'corr1';
       const pw2 = 'corr2';
       const controlData = generateControlData(1024);
-      const { ciphertext } = encrypt(msg, { password1: pw1, password2: pw2, controlData });
+      const { ciphertext } = await encrypt(msg, { password1: pw1, password2: pw2, controlData });
 
       const fake1 = new TextEncoder().encode('First fake message. '.repeat(16));
       const fake2 = new TextEncoder().encode('Second fake message. '.repeat(16));
 
-      const { controlData: fc1 } = generateDeniableControl(ciphertext, pw1, pw2, fake1);
-      const { controlData: fc2 } = generateDeniableControl(ciphertext, pw1, pw2, fake2);
+      const { controlData: fc1 } = await generateDeniableControl(ciphertext, pw1, pw2, fake1);
+      const { controlData: fc2 } = await generateDeniableControl(ciphertext, pw1, pw2, fake2);
 
       // XOR the two control files - result should look random
       const minLen = Math.min(fc1.length, fc2.length);
@@ -680,24 +680,24 @@ describe('VERIFICATION SUITE', () => {
 
   describe('8. Multiple Deniable Messages', () => {
 
-    it('100 different fake messages from one ciphertext', () => {
+    it('100 different fake messages from one ciphertext', async () => {
       const realMsg = new TextEncoder().encode('The real secret message that is long enough for fakes');
       const pw1 = 'multi1';
       const pw2 = 'multi2';
       const controlData = generateControlData(256);
-      const { ciphertext } = encrypt(realMsg, { password1: pw1, password2: pw2, controlData });
+      const { ciphertext } = await encrypt(realMsg, { password1: pw1, password2: pw2, controlData });
 
       for (let i = 0; i < 100; i++) {
         const fakeMsg = new TextEncoder().encode(`Fake ${i}`);
-        const { controlData: fc } = generateDeniableControl(ciphertext, pw1, pw2, fakeMsg);
-        const { plaintext } = decrypt(ciphertext, {
+        const { controlData: fc } = await generateDeniableControl(ciphertext, pw1, pw2, fakeMsg);
+        const { plaintext } = await decrypt(ciphertext, {
           password1: pw1, password2: pw2, controlData: fc,
         });
         assert.strictEqual(new TextDecoder().decode(plaintext), `Fake ${i}`);
       }
 
       // Original still works
-      const { plaintext: original } = decrypt(ciphertext, {
+      const { plaintext: original } = await decrypt(ciphertext, {
         password1: pw1, password2: pw2, controlData,
       });
       assert.strictEqual(

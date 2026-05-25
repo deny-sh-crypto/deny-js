@@ -14,14 +14,14 @@
  *
  * // Encrypt
  * const message = new TextEncoder().encode('Launch the new product on Monday');
- * const { ciphertext } = encrypt(message, {
+ * const { ciphertext } = await encrypt(message, {
  *   password1: 'correct-horse',
  *   password2: 'battery-staple',
  *   controlData,
  * });
  *
  * // Normal decrypt - returns the real message
- * const { plaintext } = decrypt(ciphertext, {
+ * const { plaintext } = await decrypt(ciphertext, {
  *   password1: 'correct-horse',
  *   password2: 'battery-staple',
  *   controlData,
@@ -30,12 +30,12 @@
  *
  * // Generate deniable control data - makes it decrypt to something else
  * const fakeMessage = new TextEncoder().encode('Meeting moved to Wednesday');
- * const { controlData: fakeControl } = generateDeniableControl(
+ * const { controlData: fakeControl } = await generateDeniableControl(
  *   ciphertext, 'correct-horse', 'battery-staple', fakeMessage
  * );
  *
  * // Same ciphertext + same passwords + different control file = different message
- * const { plaintext: fakePlaintext } = decrypt(ciphertext, {
+ * const { plaintext: fakePlaintext } = await decrypt(ciphertext, {
  *   password1: 'correct-horse',
  *   password2: 'battery-staple',
  *   controlData: fakeControl,
@@ -59,9 +59,22 @@ export {
   ALGORITHM,
 } from './core.js';
 
+export {
+  encryptRecord,
+  decryptRecord,
+  classifyFieldValue,
+  generateLocalDecoy,
+} from './record.js';
+
 export type {
   EncryptionParams,
   EncryptResult,
   DecryptResult,
   DeniableControlResult,
 } from './core.js';
+
+export type {
+  EncryptRecordParams,
+  EncryptRecordResult,
+  DecoyType,
+} from './record.js';

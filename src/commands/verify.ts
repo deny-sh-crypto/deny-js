@@ -14,11 +14,11 @@ interface TestResult {
 
 const results: TestResult[] = [];
 
-function test(name: string, fn: () => boolean | string): void {
+async function test(name: string, fn: () => boolean | string | Promise<boolean | string>): Promise<void> {
   let pass = false;
   let note: string | undefined;
   try {
-    const res = fn();
+    const res = await fn();
     if (typeof res === 'string') {
       pass = false;
       note = res;
@@ -52,42 +52,42 @@ export async function cmdVerify(_flags: Record<string, string>): Promise<void> {
   banner('Verification Suite');
 
   // 1. Basic round-trip
-  test('Encrypt/decrypt round-trip', () => {
+  await test('Encrypt/decrypt round-trip', async () => {
     const msg = 'Hello, deny.sh!';
     const plaintext = new TextEncoder().encode(msg);
     const controlData = generateControlData(plaintext.length + 4);
-    const { ciphertext } = encrypt(plaintext, { password1: 'pw1', password2: 'pw2', controlData });
-    const { plaintext: dec } = decrypt(ciphertext, { password1: 'pw1', password2: 'pw2', controlData });
+    const { ciphertext } = await encrypt(plaintext, { password1: 'pw1', password2: 'pw2', controlData });
+    const { plaintext: dec } = await decrypt(ciphertext, { password1: 'pw1', password2: 'pw2', controlData });
     const result = new TextDecoder().decode(dec);
     if (result !== msg) return `Expected "${msg}", got "${result}"`;
     return true;
   });
 
   // 2. Wrong password produces garbage (no exception)
-  test('Wrong password produces different output', () => {
+  await test('Wrong password produces different output', async () => {
     const msg = 'Secret';
     const plaintext = new TextEncoder().encode(msg);
     const controlData = generateControlData(plaintext.length + 4);
-    const { ciphertext } = encrypt(plaintext, { password1: 'real', password2: 'real', controlData });
-    const { plaintext: dec } = decrypt(ciphertext, { password1: 'wrong', password2: 'wrong', controlData });
+    const { ciphertext } = await encrypt(plaintext, { password1: 'real', password2: 'real', controlData });
+    const { plaintext: dec } = await decrypt(ciphertext, { password1: 'wrong', password2: 'wrong', controlData });
     const result = new TextDecoder().decode(dec);
     return result !== msg;
   });
 
   // 3. Deniable control file
-  test('Deniable control file reveals fake message', () => {
+  await test('Deniable control file reveals fake message', async () => {
     const real = 'Real message';
     const fake = 'Fake message';
     const plaintext = new TextEncoder().encode(real);
     const controlData = generateControlData(plaintext.length + 64);
-    const { ciphertext } = encrypt(plaintext, { password1: 'pw', password2: 'pw', controlData });
-    const { controlData: fakeControl } = generateDeniableControl(
+    const { ciphertext } = await encrypt(plaintext, { password1: 'pw', password2: 'pw', controlData });
+    const { controlData: fakeControl } = await generateDeniableControl(
       ciphertext, 'pw', 'pw', new TextEncoder().encode(fake)
     );
     // Real control → real message
-    const { plaintext: dec1 } = decrypt(ciphertext, { password1: 'pw', password2: 'pw', controlData });
+    const { plaintext: dec1 } = await decrypt(ciphertext, { password1: 'pw', password2: 'pw', controlData });
     // Fake control → fake message
-    const { plaintext: dec2 } = decrypt(ciphertext, { password1: 'pw', password2: 'pw', controlData: fakeControl });
+    const { plaintext: dec2 } = await decrypt(ciphertext, { password1: 'pw', password2: 'pw', controlData: fakeControl });
     const r1 = new TextDecoder().decode(dec1);
     const r2 = new TextDecoder().decode(dec2);
     if (r1 !== real) return `Real decrypt failed: got "${r1}"`;
@@ -96,13 +96,13 @@ export async function cmdVerify(_flags: Record<string, string>): Promise<void> {
   });
 
   // 4. Control files are indistinguishable
-  test('Real and fake control files have similar entropy', () => {
+  await test('Real and fake control files have similar entropy', async () => {
     // Use a large enough payload for entropy to be meaningful (256+ bytes)
     const msg = new Uint8Array(256);
     for (let i = 0; i < msg.length; i++) msg[i] = i & 0xff;
     const controlData = generateControlData(msg.length + 4);
-    const { ciphertext } = encrypt(msg, { password1: 'p', password2: 'p', controlData });
-    const { controlData: fakeControl } = generateDeniableControl(
+    const { ciphertext } = await encrypt(msg, { password1: 'p', password2: 'p', controlData });
+    const { controlData: fakeControl } = await generateDeniableControl(
       ciphertext, 'p', 'p', new Uint8Array(128).fill(0x41)
     );
     const e1 = bytesEntropy(controlData);
@@ -114,45 +114,45 @@ export async function cmdVerify(_flags: Record<string, string>): Promise<void> {
   });
 
   // 5. Ciphertext entropy
-  test('Ciphertext has high entropy (> 7.5 bits/byte)', () => {
+  await test('Ciphertext has high entropy (> 7.5 bits/byte)', async () => {
     // Use a large payload so entropy measurement is meaningful
     const msg = new Uint8Array(512);
     for (let i = 0; i < msg.length; i++) msg[i] = (i * 7 + 13) & 0xff;
     const controlData = generateControlData(msg.length + 4);
-    const { ciphertext } = encrypt(msg, { password1: 'pass1', password2: 'pass2', controlData });
+    const { ciphertext } = await encrypt(msg, { password1: 'pass1', password2: 'pass2', controlData });
     const entropy = bytesEntropy(ciphertext.slice(48)); // skip header
     if (entropy < 7.5) return `Entropy too low: ${entropy.toFixed(4)} bits/byte`;
     return true;
   });
 
   // 6. Different salts each time
-  test('Each encryption produces different ciphertext (random salt/IV)', () => {
+  await test('Each encryption produces different ciphertext (random salt/IV)', async () => {
     const msg = new TextEncoder().encode('same message');
     const controlData = generateControlData(msg.length + 4);
-    const { ciphertext: ct1 } = encrypt(msg, { password1: 'p', password2: 'p', controlData });
-    const { ciphertext: ct2 } = encrypt(msg, { password1: 'p', password2: 'p', controlData });
+    const { ciphertext: ct1 } = await encrypt(msg, { password1: 'p', password2: 'p', controlData });
+    const { ciphertext: ct2 } = await encrypt(msg, { password1: 'p', password2: 'p', controlData });
     const hex1 = Buffer.from(ct1).toString('hex');
     const hex2 = Buffer.from(ct2).toString('hex');
     return hex1 !== hex2;
   });
 
   // 7. Text mode round-trip
-  test('Text encrypt/decrypt round-trip (hex)', () => {
+  await test('Text encrypt/decrypt round-trip (hex)', async () => {
     const msg = 'Text mode test: emoji 🔐 works?';
     const controlData = generateControlData(Buffer.byteLength(msg, 'utf8') + 4);
-    const hex = encryptText(msg, 'p1', 'p2', controlData);
-    const result = decryptText(hex, 'p1', 'p2', controlData);
+    const hex = await encryptText(msg, 'p1', 'p2', controlData);
+    const result = await decryptText(hex, 'p1', 'p2', controlData);
     if (result !== msg) return `Got "${result}"`;
     return true;
   });
 
   // 8. Large payload
-  test('Large payload (10KB) round-trip', () => {
+  await test('Large payload (10KB) round-trip', async () => {
     const msg = new Uint8Array(10240);
     for (let i = 0; i < msg.length; i++) msg[i] = i & 0xff;
     const controlData = generateControlData(msg.length + 4);
-    const { ciphertext } = encrypt(msg, { password1: 'p1', password2: 'p2', controlData });
-    const { plaintext } = decrypt(ciphertext, { password1: 'p1', password2: 'p2', controlData });
+    const { ciphertext } = await encrypt(msg, { password1: 'p1', password2: 'p2', controlData });
+    const { plaintext } = await decrypt(ciphertext, { password1: 'p1', password2: 'p2', controlData });
     return plaintext.every((b, i) => b === msg[i]);
   });
 

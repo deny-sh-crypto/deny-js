@@ -46,7 +46,7 @@ export async function cmdEnvProtect(flags: Record<string, string>): Promise<void
 
   const plaintext = new TextEncoder().encode(envContent);
   const controlData = generateControlData(Math.max(plaintext.length + 4, 256));
-  const { ciphertext } = encrypt(plaintext, { password1: pw1, password2: pw2, controlData });
+  const { ciphertext } = await encrypt(plaintext, { password1: pw1, password2: pw2, controlData });
 
   // Output paths
   const envDir   = dirname(resolvedEnv);
@@ -113,7 +113,7 @@ export async function cmdEnvRestore(flags: Record<string, string>): Promise<void
 
   let plaintext: Uint8Array;
   try {
-    const result = decrypt(ciphertext, { password1: pw1, password2: pw2, controlData: control });
+    const result = await decrypt(ciphertext, { password1: pw1, password2: pw2, controlData: control });
     plaintext = result.plaintext;
   } catch (e) {
     console.error(`  Error: Decryption failed — wrong password or control file?`);

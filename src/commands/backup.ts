@@ -13,6 +13,7 @@ import * as crypto  from 'node:crypto';
 import * as fs      from 'node:fs';
 import * as os      from 'node:os';
 import * as path    from 'node:path';
+import { argon2id } from 'hash-wasm';
 import { spawnSync } from 'node:child_process';
 
 import { validateS3Bucket, validateRcloneRemote, validateFilePath } from '../utils/exec-safety.js';
@@ -147,7 +148,7 @@ async function cmdPush(flags: Record<string, string>): Promise<void> {
   // Build bundle
   step('Building encrypted backup bundle ...');
   const bundle    = buildBundle(denyDir, files);
-  const encrypted = encryptBundle(bundle, password);
+  const encrypted = await encryptBundle(bundle, password);
   const filename  = backupFilename();
 
   // Upload
@@ -236,9 +237,13 @@ async function cmdPull(flags: Record<string, string>): Promise<void> {
   step('Decrypting backup ...');
   let bundle: string;
   try {
-    bundle = decryptBundle(encryptedData, password);
-  } catch {
-    err('Decryption failed — wrong password, or the file is corrupted.');
+    bundle = await decryptBundle(encryptedData, password);
+  } catch (e: unknown) {
+    if (e instanceof Error && e.message.startsWith('unsupported backup version')) {
+      err(e.message + ' — you may be running an older deny-sh. Try upgrading.');
+    } else {
+      err('Decryption failed — wrong password, or the file is corrupted.');
+    }
     info(`Backup file: ${backupFile}`);
     info('Try again with the correct password, or restore from a different backup.');
     process.exit(1);
@@ -489,34 +494,71 @@ function restoreBundle(denyDir: string, manifest: BackupManifest, fileBlocks: st
 
 // ─── Encryption ───────────────────────────────────────────────────────────────
 
+// Version constants for encryptBundle / decryptBundle:
+// 0x02 = Argon2id, 16-byte salt (shipped 2026-05-25 in commit 5564687 for ~1 hour;
+//        superseded same day. Pre-launch: no real user bundles at this version.)
+// 0x03 = Argon2id, 32-byte salt (current, consistent with vault.ts + consumer.ts)
+const BUNDLE_VERSION = 0x03;
+
 /**
- * Encrypt a bundle using scrypt + AES-256-CTR.
- * Output layout: [16 salt][16 iv][ciphertext]
+ * Encrypt a bundle using Argon2id + AES-256-CTR.
+ * Output layout: [1 version][32 salt][16 iv][ciphertext]
+ * Version 0x03 = Argon2id (t=3, m=64 MiB, p=1), 32-byte salt.
  */
-function encryptBundle(plaintext: Buffer, password: string): Buffer {
-  const salt = crypto.randomBytes(16);
+export async function encryptBundle(plaintext: Buffer, password: string): Promise<Buffer> {
+  const salt = crypto.randomBytes(32);
   const iv   = crypto.randomBytes(16);
-  const key  = crypto.scryptSync(password, salt, 32, { N: 32768, r: 8, p: 1 });
-  const cipher = crypto.createCipheriv('aes-256-ctr', key, iv);
+  const key  = await argon2id({
+    password: Buffer.from(password, 'utf8'),
+    salt,
+    parallelism: 1,
+    iterations: 3,
+    memorySize: 65536,
+    hashLength: 32,
+    outputType: 'binary',
+  });
+  const cipher = crypto.createCipheriv('aes-256-ctr', Buffer.from(key), iv);
   const enc  = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  return Buffer.concat([salt, iv, enc]);
+  return Buffer.concat([Buffer.from([BUNDLE_VERSION]), salt, iv, enc]);
 }
 
 /**
- * Decrypt a bundle. Throws on any failure (wrong key or corruption).
+ * Decrypt a bundle. Supports version 0x02 (16-byte salt) and 0x03 (32-byte salt).
+ * Throws a descriptive error on unknown versions.
  */
-function decryptBundle(data: Buffer, password: string): string {
-  if (data.length < 33) throw new Error('Data too short');
-  const salt       = data.subarray(0, 16);
-  const iv         = data.subarray(16, 32);
-  const ciphertext = data.subarray(32);
-  const key        = crypto.scryptSync(password, salt, 32, { N: 32768, r: 8, p: 1 });
-  const decipher   = crypto.createDecipheriv('aes-256-ctr', key, iv);
+export async function decryptBundle(data: Buffer, password: string): Promise<string> {
+  const version = data.length > 0 ? data[0]! : 0;
+  let salt: Buffer, iv: Buffer, ciphertext: Buffer;
+  if (version === 0x03) {
+    // Current layout: [0x03][32 salt][16 iv][ciphertext], header = 49 bytes
+    if (data.length < 50) throw new Error('Data too short');
+    salt       = data.subarray(1, 33);
+    iv         = data.subarray(33, 49);
+    ciphertext = data.subarray(49);
+  } else if (version === 0x02) {
+    // Legacy layout (16-byte salt, shipped briefly): [0x02][16 salt][16 iv][ciphertext]
+    if (data.length < 34) throw new Error('Data too short');
+    salt       = data.subarray(1, 17);
+    iv         = data.subarray(17, 33);
+    ciphertext = data.subarray(33);
+  } else {
+    throw new Error(`unsupported backup version: 0x${version.toString(16).padStart(2, '0')}`);
+  }
+  const key        = await argon2id({
+    password: Buffer.from(password, 'utf8'),
+    salt,
+    parallelism: 1,
+    iterations: 3,
+    memorySize: 65536,
+    hashLength: 32,
+    outputType: 'binary',
+  });
+  const decipher   = crypto.createDecipheriv('aes-256-ctr', Buffer.from(key), iv);
   const plain      = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   const text       = plain.toString('utf8');
   // Validate header early so wrong-password is caught here
   if (!text.startsWith(BACKUP_MAGIC)) {
-    throw new Error('Invalid decrypted content — wrong password or corrupted backup');
+    throw new Error('Invalid decrypted content: wrong password or corrupted backup');
   }
   return text;
 }

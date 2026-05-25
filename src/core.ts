@@ -4,7 +4,7 @@
  * Algorithm:
  *
  * ENCRYPT:
- *   1. Derive AES-256 key from password1 + password2 via scrypt
+ *   1. Derive AES-256 key from password1 + password2 via Argon2id
  *   2. Prepend 4-byte plaintext length to plaintext (inside encrypted zone)
  *   3. XOR (length + plaintext) with control data
  *   4. AES-256-CTR encrypt the result
@@ -28,7 +28,8 @@
  * files produce different lengths - no metadata leaks the real message size.
  */
 
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
+import { argon2id } from 'hash-wasm';
 
 // --- Types ---
 
@@ -64,31 +65,34 @@ const SALT_LENGTH = 32;
 const IV_LENGTH = 16;
 const KEY_LENGTH = 32; // AES-256
 const ALGORITHM = 'aes-256-ctr';
-const SCRYPT_N = 2 ** 14; // 16K - fits in constrained environments, still strong KDF
-const SCRYPT_R = 8;
-const SCRYPT_P = 1;
-const SCRYPT_KEYLEN = KEY_LENGTH;
+const ARGON2_T_COST = 3;
+const ARGON2_M_COST = 65536; // KiB (64 MiB)
+const ARGON2_P = 1;
 const LENGTH_PREFIX = 4; // 4-byte length prefix inside encrypted zone
 const HEADER_LENGTH = SALT_LENGTH + IV_LENGTH; // 48 bytes (unencrypted header)
 
 // --- Key Derivation ---
 
 /**
- * Derive AES-256 key from two passwords using scrypt.
+ * Derive AES-256 key from two passwords using Argon2id.
  * Combines both passwords via SHA-256 hashing to avoid length ambiguities.
  */
-export function deriveKey(password1: string, password2: string, salt: Uint8Array): Uint8Array {
+export async function deriveKey(password1: string, password2: string, salt: Uint8Array): Promise<Uint8Array> {
   const pw1Hash = createHash('sha256').update(password1, 'utf8').digest();
   const pw2Hash = createHash('sha256').update(password2, 'utf8').digest();
   const combined = Buffer.concat([pw1Hash, pw2Hash]);
 
-  const key = scryptSync(combined, salt, SCRYPT_KEYLEN, {
-    N: SCRYPT_N,
-    r: SCRYPT_R,
-    p: SCRYPT_P,
+  const key = await argon2id({
+    password: combined,
+    salt,
+    parallelism: ARGON2_P,
+    iterations: ARGON2_T_COST,
+    memorySize: ARGON2_M_COST,
+    hashLength: KEY_LENGTH,
+    outputType: 'binary',
   });
 
-  return new Uint8Array(key);
+  return key;
 }
 
 // --- Control File Operations ---
@@ -148,7 +152,7 @@ function extractPayload(payload: Uint8Array): Uint8Array {
 /**
  * Encrypt plaintext using dual passwords and a control file.
  */
-export function encrypt(plaintext: Uint8Array, params: EncryptionParams): EncryptResult {
+export async function encrypt(plaintext: Uint8Array, params: EncryptionParams): Promise<EncryptResult> {
   const { password1, password2, controlData } = params;
 
   // Build inner payload with length prefix
@@ -165,7 +169,7 @@ export function encrypt(plaintext: Uint8Array, params: EncryptionParams): Encryp
   const iv = new Uint8Array(randomBytes(IV_LENGTH));
 
   // Derive key
-  const key = deriveKey(password1, password2, salt);
+  const key = await deriveKey(password1, password2, salt);
 
   // XOR payload with control data (the deniability layer)
   const controlSlice = controlData.slice(0, payload.length);
@@ -190,7 +194,14 @@ export function encrypt(plaintext: Uint8Array, params: EncryptionParams): Encryp
 export function decrypt(
   ciphertext: Uint8Array,
   params: EncryptionParams
-): DecryptResult {
+): Promise<DecryptResult> {
+  return decryptAsync(ciphertext, params);
+}
+
+async function decryptAsync(
+  ciphertext: Uint8Array,
+  params: EncryptionParams
+): Promise<DecryptResult> {
   const { password1, password2, controlData } = params;
 
   if (ciphertext.length < HEADER_LENGTH) {
@@ -203,7 +214,7 @@ export function decrypt(
   const encryptedData = ciphertext.slice(HEADER_LENGTH);
 
   // Derive key
-  const key = deriveKey(password1, password2, salt);
+  const key = await deriveKey(password1, password2, salt);
 
   // AES-256-CTR decrypt
   const decipher = createDecipheriv(ALGORITHM, key, iv);
@@ -238,7 +249,16 @@ export function generateDeniableControl(
   password1: string,
   password2: string,
   desiredPlaintext: Uint8Array
-): DeniableControlResult {
+): Promise<DeniableControlResult> {
+  return generateDeniableControlAsync(ciphertext, password1, password2, desiredPlaintext);
+}
+
+async function generateDeniableControlAsync(
+  ciphertext: Uint8Array,
+  password1: string,
+  password2: string,
+  desiredPlaintext: Uint8Array
+): Promise<DeniableControlResult> {
   if (ciphertext.length < HEADER_LENGTH) {
     throw new Error('Ciphertext too short - missing header');
   }
@@ -258,7 +278,7 @@ export function generateDeniableControl(
   }
 
   // Derive key (same as used for encryption)
-  const key = deriveKey(password1, password2, salt);
+  const key = await deriveKey(password1, password2, salt);
 
   // AES decrypt to get intermediate (= original payload XOR originalControlData)
   const decipher = createDecipheriv(ALGORITHM, key, iv);
@@ -291,9 +311,18 @@ export function encryptText(
   password1: string,
   password2: string,
   controlData: Uint8Array
-): string {
+): Promise<string> {
+  return encryptTextAsync(message, password1, password2, controlData);
+}
+
+async function encryptTextAsync(
+  message: string,
+  password1: string,
+  password2: string,
+  controlData: Uint8Array
+): Promise<string> {
   const plaintext = new TextEncoder().encode(message);
-  const { ciphertext } = encrypt(plaintext, { password1, password2, controlData });
+  const { ciphertext } = await encrypt(plaintext, { password1, password2, controlData });
   return Buffer.from(ciphertext).toString('hex');
 }
 
@@ -305,9 +334,18 @@ export function decryptText(
   password1: string,
   password2: string,
   controlData: Uint8Array
-): string {
+): Promise<string> {
+  return decryptTextAsync(hexCiphertext, password1, password2, controlData);
+}
+
+async function decryptTextAsync(
+  hexCiphertext: string,
+  password1: string,
+  password2: string,
+  controlData: Uint8Array
+): Promise<string> {
   const ciphertext = new Uint8Array(Buffer.from(hexCiphertext, 'hex'));
-  const { plaintext } = decrypt(ciphertext, { password1, password2, controlData });
+  const { plaintext } = await decrypt(ciphertext, { password1, password2, controlData });
   return new TextDecoder().decode(plaintext);
 }
 
