@@ -12,7 +12,7 @@ The TypeScript / Node.js SDK + CLI for deny.sh, the [deniability infrastructure]
 npm install deny-sh
 ```
 
-8.4KB. Zero runtime dependencies. Just `node:crypto` under the hood.
+Small (~10KB minified). One runtime dependency (`hash-wasm` for portable Argon2id; lets the SDK run in Node.js, browsers, and Chrome MV3 service workers without polyfills). AES-256-CTR via `node:crypto` and the Web Crypto API.
 
 ## How it works
 
@@ -96,7 +96,7 @@ Run `deny-sh --help` for the full surface.
 | TypeScript   | `deny-sh`     | [deny-sh-crypto/deny-js](https://github.com/deny-sh-crypto/deny-js) (this repo) |
 | Python       | `deny-sh`     | [deny-sh-crypto/deny-python](https://github.com/deny-sh-crypto/deny-python) |
 | Rust         | `deny-sh`     | [deny-sh-crypto/deny-rs](https://github.com/deny-sh-crypto/deny-rs) |
-| Go           | `deny-go`     | [deny-sh-crypto/deny-go](https://github.com/deny-sh-crypto/deny-go) |
+| Go           | `deny-go/v2`  | [deny-sh-crypto/deny-go](https://github.com/deny-sh-crypto/deny-go) (import path: `github.com/deny-sh-crypto/deny-go/v2`) |
 
 All four are algorithm-compatible: a ciphertext produced by one decrypts cleanly under the others.
 
