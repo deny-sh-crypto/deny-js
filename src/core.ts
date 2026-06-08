@@ -24,8 +24,22 @@
  *   3. New control data = intermediate XOR fake payload
  *   4. Now decrypting with new control file produces the fake plaintext
  *
- * The length prefix is INSIDE the encrypted+XOR zone, so different control
- * files produce different lengths - no metadata leaks the real message size.
+ * LENGTH PRIVACY:
+ *   The 4-byte length prefix lives INSIDE the encrypted+XOR zone, so the *decrypt
+ *   output* never reveals the real length: a 2-byte decoy and a 64-byte real
+ *   message can share one ciphertext, and which one you get is chosen entirely by
+ *   the control file. However, the *ciphertext byte-count itself* is fixed at
+ *   encrypt time. Without padding it equals real.length + 4, so an adversary who
+ *   only ever sees the ciphertext can read the real plaintext length off the wire.
+ *
+ *   To close that channel, pass `padToBucket: true` (or a fixed `bucketSize`).
+ *   The inner payload is then padded with random bytes up to a coarse size band
+ *   (see BUCKET_BANDS) before encryption, so the ciphertext size reveals only
+ *   which band the message falls into, not its exact length. The padding sits
+ *   after the real plaintext inside the XOR zone and is transparent to decrypt
+ *   (decrypt trims to the length prefix), so it is lossless. Bucketing is OPT-IN
+ *   to preserve exact byte-for-byte wire compatibility with the rust/python/go
+ *   ports by default; the CLI surfaces (protect wizard, record helper) opt in.
  */
 
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
@@ -40,6 +54,24 @@ export interface EncryptionParams {
   password2: string;
   /** Control file data - must be >= plaintext length + 4 bytes */
   controlData: Uint8Array;
+  /**
+   * Length privacy. When true, the inner payload is padded with random bytes up
+   * to the next size band in BUCKET_BANDS before encryption, so the resulting
+   * ciphertext size reveals only a coarse band rather than the exact plaintext
+   * length. Lossless (decrypt trims to the length prefix). Opt-in: defaults to
+   * false so wire output stays byte-identical to the non-padded ports.
+   *
+   * Note: controlData must be at least as long as the padded payload when this
+   * is set. The CLI helpers size their control data accordingly.
+   */
+  padToBucket?: boolean;
+  /**
+   * Explicit target payload length (length-prefix + plaintext + padding) in
+   * bytes. Overrides padToBucket band selection. Must be >= plaintext.length + 4.
+   * Use when a caller wants every artefact of a given class to be exactly one
+   * fixed size regardless of content.
+   */
+  bucketSize?: number;
 }
 
 export interface EncryptResult {
@@ -70,6 +102,34 @@ const ARGON2_M_COST = 65536; // KiB (64 MiB)
 const ARGON2_P = 1;
 const LENGTH_PREFIX = 4; // 4-byte length prefix inside encrypted zone
 const HEADER_LENGTH = SALT_LENGTH + IV_LENGTH; // 48 bytes (unencrypted header)
+
+/**
+ * Coarse size bands for length bucketing (inner-payload byte counts, i.e.
+ * including the 4-byte length prefix). A payload is padded up to the smallest
+ * band that fits it. Bands grow geometrically so the relative length leak is
+ * bounded (a message in the 257..1024 band could be anywhere in a 4x range),
+ * while keeping ciphertext bloat modest for the common small-secret case
+ * (seed phrases, API keys, card numbers all land in <=256). Payloads larger
+ * than the top band are rounded up to the next 16 KiB multiple.
+ */
+const BUCKET_BANDS = [64, 256, 1024, 4096, 16384] as const;
+const BUCKET_STEP_ABOVE_TOP = 16384;
+// Hard ceiling for an explicit bucketSize. Prevents a fat-fingered or hostile
+// caller-supplied value (e.g. 2**32) from triggering a multi-GB randomBytes()
+// allocation that crashes the process. 64 MiB is orders of magnitude above any
+// legitimate single-secret payload.
+const MAX_BUCKET_SIZE = 64 * 1024 * 1024;
+
+/**
+ * Return the bucketed payload length for a raw inner-payload length.
+ * Exported for tests + the CLI helpers that must size control data to match.
+ */
+export function bucketedPayloadLength(rawPayloadLength: number): number {
+  for (const band of BUCKET_BANDS) {
+    if (rawPayloadLength <= band) return band;
+  }
+  return Math.ceil(rawPayloadLength / BUCKET_STEP_ABOVE_TOP) * BUCKET_STEP_ABOVE_TOP;
+}
 
 // --- Key Derivation ---
 
@@ -156,11 +216,47 @@ export async function encrypt(plaintext: Uint8Array, params: EncryptionParams): 
   const { password1, password2, controlData } = params;
 
   // Build inner payload with length prefix
-  const payload = buildPayload(plaintext);
+  const rawPayload = buildPayload(plaintext);
+
+  // Length privacy (opt-in): pad the inner payload up to a coarse size band (or
+  // an explicit bucketSize) with random bytes so the ciphertext byte-count only
+  // reveals which band the message falls in, not its exact length. The padding
+  // sits after the real plaintext inside the XOR+encrypt zone and is trimmed on
+  // decrypt via the length prefix, so it is lossless.
+  let payload = rawPayload;
+  if (params.bucketSize !== undefined || params.padToBucket) {
+    const target = params.bucketSize !== undefined
+      ? params.bucketSize
+      : bucketedPayloadLength(rawPayload.length);
+    if (!Number.isSafeInteger(target) || target < 0) {
+      throw new Error(
+        `bucketSize must be a non-negative safe integer, got ${target}`
+      );
+    }
+    if (target < rawPayload.length) {
+      throw new Error(
+        `bucketSize (${target} bytes) must be >= plaintext + 4 bytes (${rawPayload.length} bytes)`
+      );
+    }
+    // Upper bound: refuse absurd bucket sizes that would make randomBytes()
+    // attempt a multi-GB allocation and crash the process with a native
+    // RangeError. 64 MiB is far above any legitimate single-secret payload.
+    if (target > MAX_BUCKET_SIZE) {
+      throw new Error(
+        `bucketSize (${target} bytes) exceeds maximum allowed (${MAX_BUCKET_SIZE} bytes)`
+      );
+    }
+    if (target > rawPayload.length) {
+      const padded = new Uint8Array(target);
+      padded.set(rawPayload, 0);
+      padded.set(new Uint8Array(randomBytes(target - rawPayload.length)), rawPayload.length);
+      payload = padded;
+    }
+  }
 
   if (controlData.length < payload.length) {
     throw new Error(
-      `Control data (${controlData.length} bytes) must be >= plaintext + 4 bytes (${payload.length} bytes)`
+      `Control data (${controlData.length} bytes) must be >= padded payload (${payload.length} bytes)`
     );
   }
 
@@ -220,7 +316,14 @@ async function decryptAsync(
   const decipher = createDecipheriv(ALGORITHM, key, iv);
   const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
 
-  // XOR with control data to recover payload
+  // XOR with control data to recover payload. The control file MUST be at least
+  // as long as the ciphertext payload; a short control file would silently XOR
+  // only a prefix and return garbage with no error. Fail loudly instead.
+  if (controlData.length < decrypted.length) {
+    throw new Error(
+      `Control data (${controlData.length} bytes) must be >= ciphertext payload (${decrypted.length} bytes)`
+    );
+  }
   const controlSlice = controlData.slice(0, decrypted.length);
   const payload = xorBytes(new Uint8Array(decrypted), controlSlice);
 
@@ -228,6 +331,81 @@ async function decryptAsync(
   const plaintext = extractPayload(payload);
 
   return { plaintext };
+}
+
+/**
+ * Honey Mode hook (Phase 1b).
+ *
+ * Runs the decrypt pipeline up to (but not through) extractPayload and returns
+ * BOTH the recovered inner payload AND a verdict on whether its 4-byte length
+ * prefix decodes to a well-formed frame. This is the exact branch point Honey
+ * Mode needs: a real/decoy slot yields a well-formed frame (return the
+ * plaintext); a genuinely-wrong (password, control) yields a uniform-random
+ * prefix that is almost never band-consistent (fall back to a typed honey fake).
+ *
+ * The scheme stays unauthenticated: this introduces NO stored authenticator and
+ * NO new oracle. `wellFormed` is computed purely from the in-band length-prefix
+ * check, identically for every input, and the caller emits the same output shape
+ * (a string) on both branches.
+ *
+ * `expectedBand` (when provided) tightens the check: a well-formed frame must
+ * have a length prefix that fits inside the known bucket band, not merely inside
+ * the raw payload. Honey records are always bucketed, so the band is known and
+ * the accidental-well-formed-frame probability collapses to ~band / 2^32.
+ */
+export async function decryptToPayload(
+  ciphertext: Uint8Array,
+  params: EncryptionParams,
+  expectedBand?: number
+): Promise<{ payload: Uint8Array; salt: Uint8Array; wellFormed: boolean; plaintext: Uint8Array }> {
+  const { password1, password2, controlData } = params;
+
+  if (ciphertext.length < HEADER_LENGTH) {
+    throw new Error('Ciphertext too short - missing header');
+  }
+
+  const salt = ciphertext.slice(0, SALT_LENGTH);
+  const iv = ciphertext.slice(SALT_LENGTH, HEADER_LENGTH);
+  const encryptedData = ciphertext.slice(HEADER_LENGTH);
+
+  const key = await deriveKey(password1, password2, salt);
+  const decipher = createDecipheriv(ALGORITHM, key, iv);
+  const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
+
+  if (controlData.length < decrypted.length) {
+    throw new Error(
+      `Control data (${controlData.length} bytes) must be >= ciphertext payload (${decrypted.length} bytes)`
+    );
+  }
+  const controlSlice = controlData.slice(0, decrypted.length);
+  const payload = xorBytes(new Uint8Array(decrypted), controlSlice);
+
+  const wellFormed = isWellFormedFrame(payload, expectedBand);
+  const plaintext = extractPayload(payload);
+
+  return { payload, salt, wellFormed, plaintext };
+}
+
+/**
+ * Band-consistent well-formedness check for the inner payload's 4-byte LE length
+ * prefix. A frame is well-formed iff the decoded length fits inside the payload
+ * (always required) AND, when `expectedBand` is given, the length is consistent
+ * with that bucket band (i.e. the slot was written under the same band).
+ *
+ * Constant-shape: always reads exactly 4 bytes, runs the same comparisons for
+ * every input. No early-out that depends on secret-derived branch timing.
+ */
+export function isWellFormedFrame(payload: Uint8Array, expectedBand?: number): boolean {
+  if (payload.length < LENGTH_PREFIX) return false;
+  const length = new DataView(payload.buffer, payload.byteOffset, LENGTH_PREFIX).getUint32(0, true);
+  const fitsPayload = length <= payload.length - LENGTH_PREFIX;
+  if (expectedBand === undefined) return fitsPayload;
+  // Bucketed slot: the real/decoy payload was padded to `expectedBand`, so a
+  // legit frame's declared length is <= expectedBand - LENGTH_PREFIX. A random
+  // prefix from a wrong key lands in this window with probability
+  // ~(expectedBand - 3) / 2^32 (sub-1-in-60M for the 64-byte band).
+  const fitsBand = length <= expectedBand - LENGTH_PREFIX;
+  return fitsPayload && fitsBand;
 }
 
 // --- Deniable Encryption (The Key Feature) ---
@@ -351,4 +529,4 @@ async function decryptTextAsync(
 
 // --- Utilities ---
 
-export { SALT_LENGTH, IV_LENGTH, KEY_LENGTH, HEADER_LENGTH, ALGORITHM };
+export { SALT_LENGTH, IV_LENGTH, KEY_LENGTH, HEADER_LENGTH, ALGORITHM, BUCKET_BANDS };

@@ -5,6 +5,7 @@
  *
  * Usage:
  *   deny-sh encrypt  -m "message" -p1 "pass1" -p2 "pass2" [-c control.dat] [-o output.enc]
+ *   deny-sh encrypt  -m "message" -p1 "pass1" -p2 "pass2" --honey --honey-type stripe-live-key
  *   deny-sh decrypt  -i input.enc -p1 "pass1" -p2 "pass2" -c control.dat
  *   deny-sh deny     -i input.enc -p1 "pass1" -p2 "pass2" -m "fake message" [-o fake-control.dat]
  *   deny-sh generate -s 1024 [-o control.dat]
@@ -24,11 +25,14 @@ import { resolve } from 'node:path';
 import {
   encrypt,
   decrypt,
+  encryptHoney,
   generateDeniableControl,
   generateControlData,
   encryptText,
   decryptText,
+  isHoneyEligible,
 } from './index.js';
+import { KNOWN_TYPES, type DecoyType } from './decoy-engine/types.js';
 import { bold, cyan, dim, green, red, yellow, banner, success, error as err, progressBar } from './utils/display.js';
 import { hiddenInput, confirm, isStdinPiped, readStdin } from './utils/prompts.js';
 
@@ -68,6 +72,34 @@ function requireFlag(flags: Record<string, string>, key: string, label: string):
   return value;
 }
 
+const HONEY_ELIGIBLE_TYPES = KNOWN_TYPES.filter((type) => isHoneyEligible(type));
+
+function printHoneyEligibleTypes(): void {
+  console.error('Honey-eligible types:');
+  for (const type of HONEY_ELIGIBLE_TYPES) console.error(`  ${type}`);
+}
+
+function parseHoneyType(flags: Record<string, string>): DecoyType | null {
+  if (flags['honey'] !== 'true') return null;
+  const honeyType = flags['honey-type'];
+  if (!honeyType || honeyType === 'true') {
+    console.error('Error: --honey requires --honey-type <type>');
+    printHoneyEligibleTypes();
+    process.exit(1);
+  }
+  if (!(KNOWN_TYPES as readonly string[]).includes(honeyType)) {
+    console.error(`Error: Unknown honey type "${honeyType}"`);
+    printHoneyEligibleTypes();
+    process.exit(1);
+  }
+  if (!isHoneyEligible(honeyType as DecoyType)) {
+    console.error(`Error: Honey Mode is not supported for unstructured type "${honeyType}".`);
+    printHoneyEligibleTypes();
+    process.exit(1);
+  }
+  return honeyType as DecoyType;
+}
+
 // --- Commands ---
 
 async function cmdEncrypt(flags: Record<string, string>): Promise<void> {
@@ -97,8 +129,23 @@ async function cmdEncrypt(flags: Record<string, string>): Promise<void> {
   const controlPath = flags['c'];
   const outputPath = flags['o'] || 'encrypted.bin';
   const controlOutPath = flags['co'] || 'control.dat';
+  const honeyType = parseHoneyType(flags);
 
   const plaintext = new TextEncoder().encode(message);
+
+  if (honeyType) {
+    const result = await encryptHoney({
+      secret: message,
+      passwords: { p1: pw1, p2: pw2 },
+      honeyType,
+    });
+    writeFileSync(resolve(controlOutPath), result.realCtrl);
+    console.log(`Generated honey control file: ${controlOutPath} (${result.realCtrl.length} bytes)`);
+    writeFileSync(resolve(outputPath), result.ciphertext);
+    console.log(`Encrypted: ${outputPath} (${result.ciphertext.length} bytes)`);
+    console.log(`Honey metadata: type=${result.honeyType} band=${result.band}`);
+    return;
+  }
 
   let controlData: Uint8Array;
   if (controlPath && existsSync(controlPath)) {
@@ -309,6 +356,7 @@ function showHelp(): void {
     1p             1Password integration (push/pull/list/status)
     bw             Bitwarden integration (push/pull/list/status)
     backup         Cloud backup (push/pull/list/config/auto)
+    tripwires      Bulk-arm decoy tripwires (list/arm-bulk/arm-from-csv/test/types)
 
   ${bold('Info commands:')}
     verify         Run encryption/deniability test suite
@@ -324,6 +372,8 @@ function showHelp(): void {
     -i   Input file or hex string
     -o   Output file path (use - for stdout)
     -s   Size in bytes (for generate)
+    --honey              Enable Honey Mode for encrypt
+    --honey-type <type>  Structured type for honey fakes (required with --honey)
     -I, --interactive  Prompt for passwords interactively
 
   ${bold('Stdin support:')}
@@ -332,6 +382,7 @@ function showHelp(): void {
 
   ${bold('Examples:')}
     deny-sh encrypt -m "Secret" -p1 "pass1" -p2 "pass2"
+    deny-sh encrypt -m "sk_live_..." -p1 "pass1" -p2 "pass2" --honey --honey-type stripe-live-key -o stripe.enc -co stripe.ctrl
     deny-sh decrypt -i encrypted.bin -p1 "pass1" -p2 "pass2" -c control.dat
     deny-sh deny -i encrypted.bin -p1 "p1" -p2 "p2" -m "Fake" -o fake.dat
     deny-sh protect
@@ -340,6 +391,7 @@ function showHelp(): void {
     deny-sh verify
     deny-sh verify-receipt receipt.json
     deny-sh verify-receipt receipt.json --export-openssl ./bundle
+    deny-sh tripwires arm-bulk --type stripe-live-key --count 1000 --out armed.csv
 `);
 }
 
@@ -409,6 +461,12 @@ const { command, subArgs, flags } = parseArgs(process.argv.slice(2));
     case 'backup': {
       const { cmdBackup } = await import('./commands/backup.js');
       await cmdBackup(subArgs, flags);
+      break;
+    }
+    case 'tripwires':
+    case 'tripwire': {
+      const { cmdTripwires } = await import('./commands/tripwires.js');
+      await cmdTripwires(subArgs, flags);
       break;
     }
 

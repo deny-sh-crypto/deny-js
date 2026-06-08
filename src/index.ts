@@ -52,11 +52,13 @@ export {
   deriveKey,
   encryptText,
   decryptText,
+  bucketedPayloadLength,
   SALT_LENGTH,
   IV_LENGTH,
   KEY_LENGTH,
   HEADER_LENGTH,
   ALGORITHM,
+  BUCKET_BANDS,
 } from './core.js';
 
 export {
@@ -64,7 +66,22 @@ export {
   decryptRecord,
   classifyFieldValue,
   generateLocalDecoy,
+  generateDecoyWithHash,
 } from './record.js';
+
+// Honey Mode (Phase 1b) - per-type opt-in: wrong password yields a deterministic
+// typed fake instead of nonsense, for structured secret types only.
+export {
+  encryptHoney,
+  decryptHoney,
+  encryptWithHoney,
+  decryptWithHoney,
+} from './honey.js';
+
+export {
+  isHoneyEligible,
+  generateHoneyDecoy,
+} from './record-decoy-generators.js';
 
 export type {
   EncryptionParams,
@@ -77,4 +94,18 @@ export type {
   EncryptRecordParams,
   EncryptRecordResult,
   DecoyType,
+  DecoyWithHash,
+  GenerateDecoyWithHashOptions,
 } from './record.js';
+
+export type {
+  EncryptHoneyParams,
+  EncryptHoneyResult,
+  EncryptWithHoneyOptions,
+  DecryptWithHoneyOptions,
+  DecryptHoneyResult,
+} from './honey.js';
+
+export type {
+  HoneyDecoyParams,
+} from './record-decoy-generators.js';

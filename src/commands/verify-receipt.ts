@@ -35,7 +35,7 @@
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash, createVerify, createPublicKey, KeyObject } from 'node:crypto';
+import { createHash, createVerify, createPublicKey, KeyObject, X509Certificate } from 'node:crypto';
 import {
   bold,
   cyan,
@@ -120,7 +120,44 @@ const OID = {
   ecdsaWithSha256: '1.2.840.10045.4.3.2',
   ecdsaWithSha384: '1.2.840.10045.4.3.3',
   ecdsaWithSha512: '1.2.840.10045.4.3.4',
+  extKeyUsage: '2.5.29.37',
+  kpTimeStamping: '1.3.6.1.5.5.7.3.8',
 } as const;
+
+// EKU extraction (audit 2026-06-07 TSA-P0-4): mirror the server verifier so the
+// offline CLI enforces the SAME trust rules. Without these checks the CLI
+// accepted a self-signed cert embedded in the receipt as the witness identity,
+// so anyone could forge a "verified" receipt. We now require (a) the signer
+// leaf carries the timeStamping EKU, and (b) it chains to a fingerprint-pinned
+// trusted anchor (the bundled FreeTSA root, or a caller-supplied test anchor).
+function extractEkuFromDer(der: Buffer): string[] | null {
+  try {
+    const cert = readTLV(der, 0);
+    const tbs = readTLV(cert.contents, 0);
+    let extsSeq: Tlv | null = null;
+    for (const child of iterChildren(tbs)) {
+      if (child.tag === 0xa3) { extsSeq = readTLV(child.contents, 0); break; }
+    }
+    if (!extsSeq) return null;
+    for (const ext of iterChildren(extsSeq)) {
+      const parts = [...iterChildren(ext)];
+      if (parts.length < 2) continue;
+      if (decodeOid(parts[0]) !== OID.extKeyUsage) continue;
+      const octet = parts[parts.length - 1];
+      if (octet.tag !== 0x04) return null;
+      const ekuSeq = readTLV(octet.contents, 0);
+      const oids: string[] = [];
+      for (const kp of iterChildren(ekuSeq)) if (kp.tag === 0x06) oids.push(decodeOid(kp));
+      return oids;
+    }
+    return null;
+  } catch { return null; }
+}
+
+function hasTimeStampingEkuDer(der: Buffer): boolean {
+  const ekus = extractEkuFromDer(der);
+  return !!ekus && ekus.includes(OID.kpTimeStamping);
+}
 
 function hashAlgFromOid(oid: string | null): string {
   switch (oid) {
@@ -194,7 +231,71 @@ interface TokenCheck {
   signedAttrsDigestMatch: boolean | null;
   signatureValid: boolean | null;
   genTimeSane: boolean | null;
+  /** True iff the signer leaf carries timeStamping EKU AND chains to a trusted, fingerprint-pinned anchor. */
+  chainTrusted: boolean | null;
   notes: string[];
+}
+
+// ─── Trusted-anchor chain verification (audit 2026-06-07 TSA-P0-4) ───────────
+
+let cachedCliAnchors: X509Certificate[] | null = null;
+
+/** Load the bundled FreeTSA root(s) as trust anchors for the offline CLI. */
+function loadCliAnchors(): X509Certificate[] {
+  if (cachedCliAnchors) return cachedCliAnchors;
+  const out: X509Certificate[] = [];
+  const dir = findCaBundleDir();
+  if (dir) {
+    for (const f of ['freetsa-cacert.pem', 'freetsa-tsa.pem']) {
+      try {
+        const pem = readFileSync(join(dir, f), 'utf8');
+        out.push(new X509Certificate(pem));
+      } catch { /* skip missing */ }
+    }
+  }
+  cachedCliAnchors = out;
+  return out;
+}
+
+/**
+ * Verify `leafDer` chains to one of `anchors`, bridging through `intermediates`.
+ * Anchor identity is the cert's SHA-256 fingerprint (NOT subject/serial), so a
+ * self-signed cert copying an anchor's name can't impersonate it. Every link's
+ * signature must verify; depth-bounded.
+ */
+function chainTrusted(
+  leafDer: Buffer,
+  intermediateDers: Buffer[],
+  anchors: X509Certificate[],
+  maxDepth = 8,
+): boolean {
+  if (anchors.length === 0) return false;
+  let leaf: X509Certificate;
+  try { leaf = new X509Certificate(leafDer); } catch { return false; }
+  const anchorFps = new Set(anchors.map(a => a.fingerprint256));
+  const intermediates: X509Certificate[] = [];
+  for (const d of intermediateDers) {
+    try { intermediates.push(new X509Certificate(d)); } catch { /* skip */ }
+  }
+  const seen = new Set<string>();
+  const walk = (cur: X509Certificate, depth: number): boolean => {
+    if (depth > maxDepth) return false;
+    if (anchorFps.has(cur.fingerprint256)) return true;
+    const fp = cur.fingerprint256;
+    if (seen.has(fp)) return false;
+    seen.add(fp);
+    const candidates = [...anchors, ...intermediates];
+    for (const issuer of candidates) {
+      if (issuer.subject !== cur.issuer) continue;
+      let sigOk = false;
+      try { sigOk = cur.verify(issuer.publicKey); } catch { sigOk = false; }
+      if (!sigOk) continue;
+      if (anchorFps.has(issuer.fingerprint256)) return true;
+      if (walk(issuer, depth + 1)) return true;
+    }
+    return false;
+  };
+  return walk(leaf, 0);
 }
 
 interface VerifyResult {
@@ -440,6 +541,7 @@ function verifyToken(
   tokenB64: string,
   tsaName: string,
   status: string,
+  anchors: X509Certificate[],
 ): TokenCheck {
   const check: TokenCheck = {
     tsa_name: tsaName,
@@ -448,6 +550,7 @@ function verifyToken(
     signedAttrsDigestMatch: null,
     signatureValid: null,
     genTimeSane: null,
+    chainTrusted: null,
     notes: [],
   };
   let token: Buffer;
@@ -569,6 +672,21 @@ function verifyToken(
     check.notes.push('verify threw: ' + (e?.message || String(e)));
   }
 
+  // (d) Trust: the signer leaf MUST carry the timeStamping EKU and chain to a
+  // fingerprint-pinned trusted anchor (audit 2026-06-07 TSA-P0-4). Without this
+  // a self-signed cert embedded in the receipt would be accepted as the witness.
+  const signerDer = signerCert.raw;
+  const intermediateDers = certs.filter(c => c !== signerCert).map(c => c.raw);
+  if (!hasTimeStampingEkuDer(signerDer)) {
+    check.chainTrusted = false;
+    check.notes.push('signer cert lacks timeStamping EKU (not a TSA cert)');
+  } else if (!chainTrusted(signerDer, intermediateDers, anchors)) {
+    check.chainTrusted = false;
+    check.notes.push('signer cert does not chain to a trusted TSA root');
+  } else {
+    check.chainTrusted = true;
+  }
+
   return check;
 }
 
@@ -584,6 +702,10 @@ function summarize(checks: TokenCheck[]): { ok: boolean; reason?: string } {
     if (c.signedAttrsDigestMatch === false) continue;
     if (c.signatureValid === false) continue;
     if (c.genTimeSane === false) continue;
+    // TSA-P0-4: a token is only trustworthy if it also chains to a trusted,
+    // fingerprint-pinned TSA root with the timeStamping EKU. A self-signed
+    // embedded cert (chainTrusted=false) no longer counts as verified.
+    if (c.chainTrusted !== true) continue;
     if (c.hashImprintMatch && c.signatureValid) {
       return { ok: true };
     }
@@ -610,8 +732,17 @@ function isReceiptShape(r: any): r is ReceiptJson {
 }
 
 export interface VerifyReceiptOptions {
-  /** Skip TSA signature verification (for unit tests that don't ship real tokens). */
+  /**
+   * Skip TSA signature verification (for unit tests that don't ship real tokens).
+   * DOES NOT bypass trust: a skipped token is reported as unverified, never OK.
+   */
   skipSignatureCheck?: boolean;
+  /**
+   * Extra trust anchors (DER certs), in ADDITION to the bundled FreeTSA root.
+   * Hermetic tests pass their synthetic CA here so a synthetic token verifies
+   * end-to-end without weakening the production trust set (TSA-P0-4).
+   */
+  trustAnchorsDer?: Buffer[];
 }
 
 /** Pure function: verify a parsed receipt object. Exposed for unit tests. */
@@ -619,6 +750,12 @@ export function verifyReceiptObject(
   receipt: ReceiptJson,
   opts: VerifyReceiptOptions = {},
 ): VerifyResult {
+  const anchors = [...loadCliAnchors()];
+  if (opts.trustAnchorsDer) {
+    for (const d of opts.trustAnchorsDer) {
+      try { anchors.push(new X509Certificate(d)); } catch { /* skip bad anchor */ }
+    }
+  }
   const tokens: TokenCheck[] = [];
   for (const t of receipt.tsa_tokens) {
     if (!t.token_b64) {
@@ -629,6 +766,7 @@ export function verifyReceiptObject(
         signedAttrsDigestMatch: null,
         signatureValid: null,
         genTimeSane: null,
+        chainTrusted: null,
         notes: ['no token_b64 (status=' + t.status + ')'],
       });
       continue;
@@ -641,11 +779,12 @@ export function verifyReceiptObject(
         signedAttrsDigestMatch: null,
         signatureValid: null,
         genTimeSane: null,
+        chainTrusted: null,
         notes: ['signature check skipped'],
       });
       continue;
     }
-    tokens.push(verifyToken(receipt.entry_hash, t.token_b64, t.tsa_name, t.status));
+    tokens.push(verifyToken(receipt.entry_hash, t.token_b64, t.tsa_name, t.status, anchors));
   }
   const { ok, reason } = summarize(tokens);
   return {

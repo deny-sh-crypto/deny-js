@@ -1,12 +1,14 @@
 import { randomBytes } from 'node:crypto';
 import { classifyByRegex, matchesShape } from './decoy-engine/classifier.js';
+import { passesDeepValidity } from './decoy-engine/validators.js';
 import type { DecoyType } from './decoy-engine/types.js';
 import { KNOWN_TYPES } from './decoy-engine/types.js';
-import { decrypt, encrypt, generateControlData, generateDeniableControl } from './core.js';
+import { decrypt, encrypt, generateControlData, generateDeniableControl, bucketedPayloadLength } from './core.js';
 import { generateLocalDecoy } from './record-decoy-generators.js';
 
 export type { DecoyType } from './decoy-engine/types.js';
-export { generateLocalDecoy } from './record-decoy-generators.js';
+export { generateLocalDecoy, generateDecoyWithHash } from './record-decoy-generators.js';
+export type { DecoyWithHash, GenerateDecoyWithHashOptions } from './record-decoy-generators.js';
 
 export interface EncryptRecordParams {
   /** Real record: field name -> field value (both strings). */
@@ -76,7 +78,16 @@ function assertUint32(n: number, label: string): void {
   if (n > 0xffffffff) throw new Error(`${label} too long`);
 }
 
+// P2-3: hard cap on the encoded record frame. A record is a handful of small
+// secrets (api keys, seed phrases, db URIs), never megabytes. Cap the total so a
+// pathological input can't drive an unbounded allocation. 16 MiB is orders of
+// magnitude above any legitimate credential record.
+const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+
 export function encodeRecordFrame(record: Record<string, string>, fieldOrder = Object.keys(record)): Uint8Array {
+  // P2-2: guard the field count up front (before building anything) so the
+  // uint32 field-count writer can never silently wrap.
+  assertUint32(fieldOrder.length, 'field count');
   const chunks: Uint8Array[] = [];
   let total = MAGIC.length + 4;
   for (const name of fieldOrder) {
@@ -92,8 +103,10 @@ export function encodeRecordFrame(record: Record<string, string>, fieldOrder = O
     view.setUint32(2 + nameBytes.length, valueBytes.length, true);
     chunks.push(header, valueBytes);
     total += header.length + valueBytes.length;
+    if (total > MAX_FRAME_BYTES) {
+      throw new Error(`record frame exceeds maximum size (${MAX_FRAME_BYTES} bytes)`);
+    }
   }
-  assertUint32(fieldOrder.length, 'field count');
   const out = new Uint8Array(total);
   out.set(MAGIC, 0);
   const view = new DataView(out.buffer);
@@ -132,19 +145,47 @@ export function decodeRecordFrame(frame: Uint8Array): Record<string, string> {
 }
 
 function chooseDecoy(realValue: string, type: DecoyType, supplied?: string): string {
-  const shapeOk = (value: string): boolean =>
-    (value.length === 0 && (type === 'generic' || type === 'freeform-secret')) || matchesShape(value, type);
+  // A plausible decoy must satisfy BOTH the regex shape AND the type's
+  // deep-validity check (Luhn / mod-97 / BIP-39 checksum / Base58Check / ...).
+  // Shape alone is not enough: a real value passes its checksum, so a decoy that
+  // fails the checksum would be a real-vs-decoy distinguisher for any adversary
+  // who runs the check. passesDeepValidity returns true for types with no
+  // meaningful integrity check, so those keep shape-only behaviour.
+  const plausible = (value: string): boolean => {
+    if (value.length === 0 && (type === 'generic' || type === 'freeform-secret')) return true;
+    return matchesShape(value, type) && passesDeepValidity(value, type);
+  };
 
-  if (supplied !== undefined && byteLen(supplied) <= byteLen(realValue) && shapeOk(supplied)) {
+  if (supplied !== undefined && byteLen(supplied) <= byteLen(realValue) && plausible(supplied)) {
     return supplied;
   }
 
-  for (let i = 0; i < 20; i++) {
-    const generated = generateLocalDecoy(realValue, type);
-    if (byteLen(generated) <= byteLen(realValue) && shapeOk(generated)) return generated;
+  // Generators for checksummed types emit valid values directly, so this loop
+  // normally terminates on the first iteration; the extra attempts cover the
+  // rare case where length budget + checksum constraints collide. A real value
+  // too short to fit ANY valid decoy of its type (e.g. `postgres://localhost`,
+  // shorter than the minimum a postgres-uri decoy needs) makes the generator
+  // THROW rather than return; catch that so a single short field can't crash
+  // the whole encryptRecord call.
+  for (let i = 0; i < 50; i++) {
+    let generated: string;
+    try {
+      generated = generateLocalDecoy(realValue, type);
+    } catch {
+      continue;
+    }
+    if (byteLen(generated) <= byteLen(realValue) && plausible(generated)) return generated;
   }
 
-  throw new Error(`could not generate decoy within real value budget for type ${type}`);
+  // Last-resort fallback: a generic printable string of exactly realValue's
+  // length always fits the byte budget and never throws (no checksum constraint).
+  // It will not match a checksummed type's shape, but for a value so short that
+  // no valid typed decoy exists, a non-crashing generic decoy is strictly better
+  // than a thrown exception that takes down the caller.
+  const fallback = generateLocalDecoy(realValue, 'generic');
+  if (byteLen(fallback) <= byteLen(realValue)) return fallback;
+
+  throw new Error(`could not generate valid decoy within real value budget for type ${type}`);
 }
 
 /**
@@ -181,11 +222,16 @@ export async function encryptRecord(params: EncryptRecordParams): Promise<Encryp
     throw new Error('generated decoy frame exceeds real frame budget');
   }
   const frameDecoy = padTo(frameDecoyRaw, frameReal.length);
-  const controlData = generateControlData(frameReal.length + 4);
+  // Length privacy: bucket the ciphertext size so the encrypted record's
+  // byte-count reveals only a coarse band, not the exact real-record length.
+  // Control data must cover the padded payload.
+  const targetPayloadLen = bucketedPayloadLength(frameReal.length + 4);
+  const controlData = generateControlData(targetPayloadLen);
   const result = await encrypt(frameReal, {
     password1: params.passwords.p1,
     password2: params.passwords.p2,
     controlData,
+    padToBucket: true,
   });
   const { controlData: decoyCtrl } = await generateDeniableControl(
     result.ciphertext,

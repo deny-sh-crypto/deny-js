@@ -1,6 +1,6 @@
 {
   "name": "deny-sh",
-  "version": "2.0.3",
+  "version": "2.1.1",
   "description": "Deniable encryption. One ciphertext, two passwords, two completely different plaintexts.",
   "type": "module",
   "main": "dist/src/index.js",
@@ -9,6 +9,10 @@
     ".": {
       "import": "./dist/src/index.js",
       "types": "./dist/src/index.d.ts"
+    },
+    "./client": {
+      "import": "./dist/src/client.js",
+      "types": "./dist/src/client.d.ts"
     }
   },
   "bin": {
@@ -17,6 +21,8 @@
   "files": [
     "dist/src/index.js",
     "dist/src/index.d.ts",
+    "dist/src/client.js",
+    "dist/src/client.d.ts",
     "dist/src/core.js",
     "dist/src/core.d.ts",
     "dist/src/cli.js",

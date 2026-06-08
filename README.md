@@ -89,6 +89,19 @@ deny-sh status                                 # show .deny/ state and version i
 
 Run `deny-sh --help` for the full surface.
 
+## Agent integration — `deny-sh/client`
+
+Thin HTTP client for fetching a credential from the deny.sh managed vault inside an AI agent's tool boundary. The credential is decrypted on your server, used to call the third-party API, and the LLM only ever sees the API result. The Stripe key (or any other secret) never enters the model's context window, so a successful prompt injection cannot exfiltrate it.
+
+```ts
+import { vaultGet } from 'deny-sh/client';
+
+const stripeKey = await vaultGet('stripe-prod', process.env.VAULT_PW!);
+// use stripeKey inside the tool, never return it to the model
+```
+
+Configure via env: `DENY_API_KEY` (your bearer key, required), `DENY_API_URL` (default `https://deny.sh/api`). Use `vaultGetById(id, password)` if you have stored the stable id of the vault item to skip the label lookup. See [deny.sh/integrations](https://deny.sh/integrations) for full Vercel AI SDK, OpenAI Responses, and LangChain examples.
+
 ## Other languages
 
 | Language     | Package        | Repo |

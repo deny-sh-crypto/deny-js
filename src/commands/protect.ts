@@ -10,7 +10,7 @@ import { pipeline } from 'node:stream/promises';
 import { createReadStream, createWriteStream, rmSync, existsSync } from 'node:fs';
 import { Readable } from 'node:stream';
 
-import { encrypt, generateControlData, generateDeniableControl } from '../index.js';
+import { encrypt, generateControlData, generateDeniableControl, bucketedPayloadLength, HEADER_LENGTH } from '../index.js';
 import {
   banner, success, warn, info, step, progressBar,
   bold, red, green, yellow, dim
@@ -156,12 +156,27 @@ export async function cmdProtect(_flags: Record<string, string>): Promise<void> 
   await animateProgress('Deriving key');
 
   const plaintext = new TextEncoder().encode(seedPhrase.trim());
-  const controlData = generateControlData(Math.max(plaintext.length + 4, 512));
+  // Length privacy: bucket the ciphertext size so an adversary who measures the
+  // encrypted file learns only a coarse band, not the exact seed-phrase length
+  // (which would otherwise leak 12 vs 24 words). Control data must cover the
+  // padded payload, so size it to the bucketed length (>= plaintext + 4).
+  const targetPayloadLen = bucketedPayloadLength(plaintext.length + 4);
+  const rawControlData = generateControlData(targetPayloadLen);
   const { ciphertext } = await encrypt(plaintext, {
     password1: realPw1,
     password2: realPw1,
-    controlData,
+    controlData: rawControlData,
+    padToBucket: true,
   });
+
+  // Deniability: the real control file MUST be exactly the same length as the
+  // decoy control file, otherwise an adversary who seizes both .dat files can
+  // tell them apart by size alone (the bigger one is real). decrypt() only ever
+  // reads controlData.slice(0, ciphertextPayloadLen), so trimming the unused
+  // tail is lossless. generateDeniableControl() already emits exactly this
+  // length, so trimming here makes real and decoy byte-identical in size.
+  const payloadLen = ciphertext.length - HEADER_LENGTH;
+  const controlData = rawControlData.slice(0, payloadLen);
 
   writeFileSync(resolve(outputBin), ciphertext);
   writeFileSync(resolve(controlReal), controlData);

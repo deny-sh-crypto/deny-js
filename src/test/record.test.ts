@@ -65,16 +65,36 @@ describe('record helper', () => {
     assert.equal(result.decoy.seed!.trim().split(/\s+/).length, 12);
   });
 
-  it('rejects generated decoys that cannot fit the real frame budget', async () => {
-    await assert.rejects(
-      () =>
-        encryptRecord({
-          real: { tiny: 'x' },
-          explicitTypes: { tiny: 'stripe-live-key' },
-          passwords,
-        }),
-      /exceeds real value length|could not generate decoy/
+  it('falls back to a generic decoy (does NOT throw) when no typed decoy fits the budget', async () => {
+    // A 1-char value explicitly typed as stripe-live-key cannot fit any valid
+    // stripe-shaped decoy. The old behaviour threw an uncaught error; the fix
+    // gracefully falls back to a generic decoy of the same length so a single
+    // short field can't crash the whole encryptRecord call.
+    const result = await encryptRecord({
+      real: { tiny: 'x' },
+      explicitTypes: { tiny: 'stripe-live-key' },
+      passwords,
+    });
+    // Decoy must fit the byte budget; real + decoy paths both round-trip.
+    assert.ok(result.decoy.tiny!.length <= 'x'.length);
+    assert.deepEqual(await decryptRecord(result.ciphertext, result.realCtrl, passwords), { tiny: 'x' });
+    assert.deepEqual(
+      await decryptRecord(result.ciphertext, result.decoyCtrl, passwords),
+      { tiny: result.decoy.tiny! },
     );
+  });
+
+  it('does not crash encryptRecord on a short checksummed value (postgres-uri)', async () => {
+    // Regression for P1-1: `postgres://localhost` is a valid short DB URI that
+    // classifies as a checksummed/structured type too short to fit a typed decoy.
+    const result = await encryptRecord({
+      real: { db: 'postgres://localhost' },
+      passwords,
+    });
+    assert.ok(result.decoy.db!.length <= 'postgres://localhost'.length);
+    assert.deepEqual(await decryptRecord(result.ciphertext, result.realCtrl, passwords), {
+      db: 'postgres://localhost',
+    });
   });
 
   it('preserves shape contracts for representative local generators', () => {
@@ -101,5 +121,12 @@ describe('record helper', () => {
 
     const result = await encryptRecord({ real: record, passwords });
     assert.deepEqual(await decryptRecord(result.ciphertext, result.realCtrl, passwords), record);
+  });
+
+  // P2-3 regression: a pathologically large field must be rejected by the frame
+  // size cap rather than driving an unbounded allocation.
+  it('rejects a record frame larger than the 16 MiB cap', () => {
+    const huge = { blob: 'a'.repeat(17 * 1024 * 1024) };
+    assert.throws(() => encodeRecordFrame(huge), /exceeds maximum size/);
   });
 });

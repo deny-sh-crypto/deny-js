@@ -98,6 +98,19 @@ describe('deny-sh', () => {
         /Control data.*must be/
       );
     });
+
+    // P2-1 regression: decrypt() must also reject a too-short control file rather
+    // than silently XOR-ing only a prefix and returning garbage with no error.
+    it('decrypt should reject control data shorter than the ciphertext payload', async () => {
+      const message = new TextEncoder().encode('Hello world');
+      const controlData = generateControlData(message.length + 4);
+      const { ciphertext } = await encrypt(message, { password1: pw1, password2: pw2, controlData });
+      const shortControl = generateControlData(3);
+      await assert.rejects(
+        () => decrypt(ciphertext, { password1: pw1, password2: pw2, controlData: shortControl }),
+        /Control data.*must be/
+      );
+    });
   });
 
   describe('deniable encryption', () => {
