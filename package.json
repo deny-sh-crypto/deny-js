@@ -1,6 +1,6 @@
 {
   "name": "deny-sh",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Deniable encryption. One ciphertext, two passwords, two completely different plaintexts.",
   "type": "module",
   "main": "dist/src/index.js",
@@ -31,6 +31,8 @@
     "dist/src/record.d.ts",
     "dist/src/record-decoy-generators.js",
     "dist/src/record-decoy-generators.d.ts",
+    "dist/src/honey.js",
+    "dist/src/honey.d.ts",
     "dist/src/commands/**/*.js",
     "dist/src/commands/**/*.d.ts",
     "dist/src/utils/**/*.js",
