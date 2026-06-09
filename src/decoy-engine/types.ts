@@ -8,7 +8,8 @@
  * SDK installs land (since they'll bring zod-like validators anyway).
  *
  * Type list grew from the original 17 (15 named + generic + freeform-secret) to
- * 40 on 2026-05-22 (37 named + generic + freeform-secret) ahead of the
+ * 44 on 2026-06-09 (41 named + generic + freeform-secret) after GCP/Azure
+ * credential shapes were added. Previous expansion was 40 on 2026-05-22 ahead of the
  * walkthrough video. New types: 14 additional API tokens (slack-bot/user,
  * discord-bot, digitalocean-pat, twilio-auth, sendgrid, huggingface, npm-publish,
  * pypi, gitlab-pat, mailgun, linear, notion, shopify, square, cloudflare),
@@ -38,6 +39,10 @@ export type DecoyType =
   | 'slack-user-token'
   | 'discord-bot-token'
   | 'digitalocean-pat'
+  | 'gcp-api-key'
+  | 'gcp-service-account-key'
+  | 'azure-client-secret'
+  | 'azure-storage-key'
   | 'twilio-auth-token'
   | 'sendgrid-key'
   | 'huggingface-token'
@@ -64,7 +69,7 @@ export type DecoyType =
   | 'generic'
   | 'freeform-secret';
 
-/** Runtime enumeration of the 40 known types. */
+/** Runtime enumeration of the 44 known types. */
 export const KNOWN_TYPES: readonly DecoyType[] = Object.freeze([
   'stripe-test-key',
   'stripe-live-key',
@@ -85,6 +90,10 @@ export const KNOWN_TYPES: readonly DecoyType[] = Object.freeze([
   'slack-user-token',
   'discord-bot-token',
   'digitalocean-pat',
+  'gcp-api-key',
+  'gcp-service-account-key',
+  'azure-client-secret',
+  'azure-storage-key',
   'twilio-auth-token',
   'sendgrid-key',
   'huggingface-token',

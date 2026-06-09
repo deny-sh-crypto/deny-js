@@ -28,7 +28,10 @@ function sourceBytes(n: number): Uint8Array {
 
 const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const ALNUM_UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const ALPHA_LOWER = 'abcdefghijklmnopqrstuvwxyz';
+const ALNUM_LOWER = 'abcdefghijklmnopqrstuvwxyz0123456789';
 const BASE64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const HEX = '0123456789abcdef';
 const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const NI_FIRST = 'ABCEGHJKLMNOPRSTWXYZ';
@@ -425,6 +428,52 @@ function randomPrivateKeyPem(real: string): string {
   return `${begin}${chars(BASE64URL, budget)}${end}`;
 }
 
+function randomSlug(): string {
+  const len = 8 + randInt(12);
+  let out = ALPHA_LOWER[randInt(ALPHA_LOWER.length)]!;
+  for (let i = 1; i < len; i++) {
+    out += randInt(10) < 2 ? '-' : ALNUM_LOWER[randInt(ALNUM_LOWER.length)]!;
+  }
+  if (out.endsWith('-')) out = out.slice(0, -1) + ALNUM_LOWER[randInt(ALNUM_LOWER.length)]!;
+  return out;
+}
+
+function pemBodyLines(lineCount: number): string {
+  const lines: string[] = [];
+  for (let i = 0; i < lineCount; i++) lines.push(chars(BASE64, 64));
+  return lines.join('\n');
+}
+
+function randomGcpServiceAccountKey(real: string): string {
+  let projectId = randomSlug();
+  let accountName = `svc-${randomSlug()}`.slice(0, 28).replace(/-$/, 'a');
+  try {
+    const parsed = JSON.parse(real) as Record<string, unknown>;
+    if (typeof parsed['project_id'] === 'string' && /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(parsed['project_id'])) {
+      projectId = parsed['project_id'];
+    }
+    if (typeof parsed['client_email'] === 'string') {
+      const local = parsed['client_email'].split('@')[0];
+      if (local && /^[a-z][a-z0-9-]{2,28}[a-z0-9]$/.test(local)) accountName = local;
+    }
+  } catch { /* keep generated identifiers */ }
+
+  const obj = {
+    type: 'service_account',
+    project_id: projectId,
+    private_key_id: chars(HEX, 40),
+    private_key: `-----BEGIN PRIVATE KEY-----\n${pemBodyLines(10)}\n-----END PRIVATE KEY-----\n`,
+    client_email: `${accountName}@${projectId}.iam.gserviceaccount.com`,
+    client_id: `${1 + randInt(9)}${digits(20)}`,
+    auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+    token_uri: 'https://oauth2.googleapis.com/token',
+    auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+    client_x509_cert_url: `https://www.googleapis.com/robot/v1/metadata/x509/${accountName}%40${projectId}.iam.gserviceaccount.com`,
+    universe_domain: 'googleapis.com',
+  };
+  return JSON.stringify(obj, null, 2);
+}
+
 const URI_HOST_LABELS = ['db', 'pg', 'mongo', 'cluster0', 'cluster1', 'main', 'prod', 'master', 'primary', 'reader', 'shard0', 'rds', 'atlas'];
 const URI_DOMAINS = ['amazonaws.com', 'mongodb.net', 'herokuapp.com', 'azure.com', 'gcp.internal', 'render.com', 'supabase.co', 'compute.internal', 'rds.amazonaws.com'];
 const URI_DBNAMES = ['app', 'prod', 'main', 'users', 'data', 'core', 'api', 'service', 'production', 'analytics', 'auth'];
@@ -582,6 +631,18 @@ export function generateLocalDecoy(realValue: string, type: DecoyType): string {
     }
     case 'digitalocean-pat':
       return token('dop_v1_', realLen, HEX, 64, 64);
+    case 'gcp-api-key':
+      return token('AIza', realLen, BASE64URL, 35, 35);
+    case 'gcp-service-account-key':
+      return randomGcpServiceAccountKey(realValue);
+    case 'azure-client-secret': {
+      if (realLen < 34) throw new Error('generated decoy exceeds real value length');
+      const len = Math.min(44, realLen);
+      return `${chars(ALNUM, 4)}~${chars(`${ALNUM}_.-`, len - 5)}`;
+    }
+    case 'azure-storage-key':
+      if (realLen < 88) throw new Error('generated decoy exceeds real value length');
+      return `${chars(BASE64, 86)}==`;
     case 'twilio-auth-token':
       return token('SK', realLen, HEX, 32, 32);
     case 'sendgrid-key':
@@ -685,6 +746,15 @@ function dummyRealForType(type: DecoyType, lenHint: number): string {
       return `mongodb://${'x'.repeat(Math.max(0, lenHint - 'mongodb://'.length))}`;
     case 'phone-e164':
       return `+${'1'.repeat(Math.max(0, lenHint - 1))}`;
+    case 'gcp-service-account-key':
+      return JSON.stringify({
+        type: 'service_account',
+        project_id: 'demo-prod-123',
+        private_key_id: '0'.repeat(40),
+        private_key: `-----BEGIN PRIVATE KEY-----\n${'A'.repeat(640)}\n-----END PRIVATE KEY-----\n`,
+        client_email: 'svc-demo@demo-prod-123.iam.gserviceaccount.com',
+        client_id: '1'.repeat(21),
+      });
     default:
       return 'x'.repeat(lenHint);
   }
@@ -730,6 +800,14 @@ function defaultLengthForType(type: DecoyType): number {
       return 72;
     case 'digitalocean-pat':
       return 71;
+    case 'gcp-api-key':
+      return 39;
+    case 'gcp-service-account-key':
+      return 1600;
+    case 'azure-client-secret':
+      return 40;
+    case 'azure-storage-key':
+      return 88;
     case 'twilio-auth-token':
       return 34;
     case 'sendgrid-key':
@@ -802,6 +880,14 @@ const HONEY_INELIGIBLE: ReadonlySet<DecoyType> = new Set<DecoyType>([
   'jwt-token',
   'postgres-uri',
   'mongodb-uri',
+  // gcp-service-account-key is a 2-space-indented JSON blob with an embedded
+  // PEM body and identifiers parsed out of the real value: the same
+  // JSON/multi-branch class as the URI types above, byte-parity not provable
+  // across the Rust/Python/Go ports. Honey-ineligible; the classic
+  // record-decoy path still uses the full generator for it. The other three
+  // cloud types (gcp-api-key, azure-client-secret, azure-storage-key) are
+  // simple charset tokens and ARE honey-eligible.
+  'gcp-service-account-key',
 ]);
 
 /** True iff `type` can be safely honey-backed (structured, fully fakeable). */

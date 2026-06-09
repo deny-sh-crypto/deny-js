@@ -1,6 +1,6 @@
 {
   "name": "deny-sh",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "description": "Deniable encryption. One ciphertext, two passwords, two completely different plaintexts.",
   "type": "module",
   "main": "dist/src/index.js",

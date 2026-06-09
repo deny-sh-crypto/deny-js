@@ -63,6 +63,12 @@ const RE_SLACK_USER = /^xoxp-\d{9,16}-\d{9,16}-\d{9,16}-[A-Za-z0-9]{24,}$/;
 const RE_DISCORD_BOT = /^[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,38}$/;
 // digitalocean-pat: dop_v1_ + 64 hex chars
 const RE_DO_PAT = /^dop_v1_[a-f0-9]{64}$/;
+// gcp-api-key: AIza + 35 chars from [0-9A-Za-z_-], total 39 chars
+const RE_GCP_API_KEY = /^AIza[0-9A-Za-z_-]{35}$/;
+// azure-client-secret: 34-44 chars from Entra secret alphabet, must contain ~
+const RE_AZURE_CLIENT_SECRET = /^(?=.*~)[A-Za-z0-9_.~-]{34,44}$/;
+// azure-storage-key: 512-bit base64 access key, 86 chars + ==
+const RE_AZURE_STORAGE_KEY = /^[A-Za-z0-9+/]{86}==$/;
 // twilio-auth-token: AC + 32 hex (account sid is AC + 32 hex; we treat as token)
 //   real auth tokens are 32 hex alone, but the SK<32hex>:<32hex> API key pair is
 //   the more distinctive Twilio shape. We use SK + 32 hex chars as the canonical
@@ -140,6 +146,18 @@ function looksLikeJwt(value: string): boolean {
   }
 }
 
+function looksLikeGcpServiceAccountKey(value: string): boolean {
+  try {
+    const obj = JSON.parse(value);
+    return obj !== null
+      && typeof obj === 'object'
+      && (obj as Record<string, unknown>)['type'] === 'service_account'
+      && typeof (obj as Record<string, unknown>)['private_key_id'] === 'string';
+  } catch {
+    return false;
+  }
+}
+
 /** Strip whitespace + lowercase. Used for BIP-39 phrase shape check. */
 function normalisePhrase(s: string): string[] {
   return s.trim().split(/\s+/).map((w) => w.toLowerCase());
@@ -170,6 +188,7 @@ export function classifyByRegex(hint: string): DecoyType | null {
   const v = hint;
 
   // Multi-line / shape-anchored matches first
+  if (looksLikeGcpServiceAccountKey(v)) return 'gcp-service-account-key';
   if (RE_PRIV_PEM.test(v)) return 'private-key-pem';
 
   if (RE_STRIPE_TEST.test(v)) return 'stripe-test-key';
@@ -190,7 +209,9 @@ export function classifyByRegex(hint: string): DecoyType | null {
   // SaaS / API tokens (specific prefixes, tested before generic shapes)
   if (RE_SLACK_USER.test(v)) return 'slack-user-token';
   if (RE_SLACK_BOT.test(v)) return 'slack-bot-token';
+  if (RE_GCP_API_KEY.test(v)) return 'gcp-api-key';
   if (RE_DO_PAT.test(v)) return 'digitalocean-pat';
+  if (RE_AZURE_CLIENT_SECRET.test(v)) return 'azure-client-secret';
   if (RE_SENDGRID.test(v)) return 'sendgrid-key';
   if (RE_HF.test(v)) return 'huggingface-token';
   if (RE_NPM.test(v)) return 'npm-publish-token';
@@ -235,6 +256,8 @@ export function classifyByRegex(hint: string): DecoyType | null {
   if (RE_BTC_WIF.test(v)) return 'bitcoin-wif';
   // Solana shape requires 87-88 Base58 chars — distinctive enough.
   if (RE_SOLANA.test(v)) return 'solana-private-key';
+  // Bare base64 access keys are weakly distinctive; keep late.
+  if (RE_AZURE_STORAGE_KEY.test(v)) return 'azure-storage-key';
 
   return null;
 }
@@ -287,6 +310,14 @@ export function matchesShape(value: string, type: DecoyType): boolean {
       return RE_DISCORD_BOT.test(value);
     case 'digitalocean-pat':
       return RE_DO_PAT.test(value);
+    case 'gcp-api-key':
+      return RE_GCP_API_KEY.test(value);
+    case 'gcp-service-account-key':
+      return looksLikeGcpServiceAccountKey(value);
+    case 'azure-client-secret':
+      return RE_AZURE_CLIENT_SECRET.test(value);
+    case 'azure-storage-key':
+      return RE_AZURE_STORAGE_KEY.test(value);
     case 'twilio-auth-token':
       return RE_TWILIO_AUTH.test(value);
     case 'sendgrid-key':

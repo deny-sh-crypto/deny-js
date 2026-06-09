@@ -47,7 +47,8 @@ const KNOWN_TYPES: DecoyType[] = [
   'openai-key', 'anthropic-key', 'resend-key', 'aws-access-key', 'bip39-phrase',
   'jwt-token', 'iban', 'credit-card', 'private-key-pem', 'postgres-uri',
   'mongodb-uri', 'slack-bot-token', 'slack-user-token', 'discord-bot-token',
-  'digitalocean-pat', 'twilio-auth-token', 'sendgrid-key', 'huggingface-token',
+  'digitalocean-pat', 'gcp-api-key', 'gcp-service-account-key',
+  'azure-client-secret', 'azure-storage-key', 'twilio-auth-token', 'sendgrid-key', 'huggingface-token',
   'npm-publish-token', 'pypi-token', 'gitlab-pat', 'mailgun-api-key',
   'linear-api-key', 'notion-token', 'shopify-token', 'square-token',
   'cloudflare-api-token', 'ethereum-private-key', 'bitcoin-wif',
@@ -79,6 +80,10 @@ function defaultLengthForType(type: DecoyType): number {
     case 'slack-user-token':      return 57;
     case 'discord-bot-token':     return 72;
     case 'digitalocean-pat':      return 71;
+    case 'gcp-api-key':           return 39;
+    case 'gcp-service-account-key': return 1600;
+    case 'azure-client-secret':   return 40;
+    case 'azure-storage-key':     return 88;
     case 'twilio-auth-token':     return 32;
     case 'sendgrid-key':          return 69;
     case 'huggingface-token':     return 40;
