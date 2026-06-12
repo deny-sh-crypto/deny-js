@@ -79,6 +79,8 @@ export interface EncryptResult {
   ciphertext: Uint8Array;
   /** Salt used for key derivation (also embedded in ciphertext header) */
   salt: Uint8Array;
+  /** Number of control bytes consumed by this ciphertext payload. */
+  controlBytes: number;
 }
 
 export interface DecryptResult {
@@ -89,6 +91,14 @@ export interface DecryptResult {
 export interface DeniableControlResult {
   /** New control data that makes ciphertext decrypt to desiredPlaintext */
   controlData: Uint8Array;
+}
+
+export interface EncryptTextOptions {
+  /**
+   * Compatibility escape hatch. When true, text mode uses the raw low-level
+   * wire shape (plaintext + 4 bytes) instead of length bucketing.
+   */
+  unsafeUnpadded?: boolean;
 }
 
 // --- Constants ---
@@ -102,6 +112,25 @@ const ARGON2_M_COST = 65536; // KiB (64 MiB)
 const ARGON2_P = 1;
 const LENGTH_PREFIX = 4; // 4-byte length prefix inside encrypted zone
 const HEADER_LENGTH = SALT_LENGTH + IV_LENGTH; // 48 bytes (unencrypted header)
+
+/**
+ * Public, length-free error message for any malformed-artifact / wrong-credential
+ * decode failure on the decrypt surface (review P2 #1). Distinct error strings
+ * that embed exact byte lengths let an attacker who can observe errors/logs tell
+ * a malformed artifact apart from a wrong credential (a parsing oracle). The
+ * public surface returns this single opaque message; precise lengths are
+ * available only when DENY_DEBUG_ERRORS is set (operator-side debugging), never
+ * by default.
+ */
+const MALFORMED_INPUT_MESSAGE = 'decrypt failed or malformed input';
+
+function malformedInputError(detail: string): Error {
+  // eslint-disable-next-line n/no-process-env
+  if (typeof process !== 'undefined' && process.env && process.env['DENY_DEBUG_ERRORS']) {
+    return new Error(`${MALFORMED_INPUT_MESSAGE} (${detail})`);
+  }
+  return new Error(MALFORMED_INPUT_MESSAGE);
+}
 
 /**
  * Coarse size bands for length bucketing (inner-payload byte counts, i.e.
@@ -281,7 +310,7 @@ export async function encrypt(plaintext: Uint8Array, params: EncryptionParams): 
   result.set(iv, SALT_LENGTH);
   result.set(new Uint8Array(encrypted), HEADER_LENGTH);
 
-  return { ciphertext: result, salt };
+  return { ciphertext: result, salt, controlBytes: payload.length };
 }
 
 /**
@@ -301,7 +330,7 @@ async function decryptAsync(
   const { password1, password2, controlData } = params;
 
   if (ciphertext.length < HEADER_LENGTH) {
-    throw new Error('Ciphertext too short - missing header');
+    throw malformedInputError(`ciphertext ${ciphertext.length} < header ${HEADER_LENGTH}`);
   }
 
   // Extract header
@@ -318,10 +347,12 @@ async function decryptAsync(
 
   // XOR with control data to recover payload. The control file MUST be at least
   // as long as the ciphertext payload; a short control file would silently XOR
-  // only a prefix and return garbage with no error. Fail loudly instead.
+  // only a prefix and return garbage with no error. Fail loudly instead. Public
+  // message is length-free (review P2 #1); exact lengths gated behind
+  // DENY_DEBUG_ERRORS so error text is not a parsing oracle.
   if (controlData.length < decrypted.length) {
-    throw new Error(
-      `Control data (${controlData.length} bytes) must be >= ciphertext payload (${decrypted.length} bytes)`
+    throw malformedInputError(
+      `control ${controlData.length} < payload ${decrypted.length}`
     );
   }
   const controlSlice = controlData.slice(0, decrypted.length);
@@ -361,7 +392,7 @@ export async function decryptToPayload(
   const { password1, password2, controlData } = params;
 
   if (ciphertext.length < HEADER_LENGTH) {
-    throw new Error('Ciphertext too short - missing header');
+    throw malformedInputError(`ciphertext ${ciphertext.length} < header ${HEADER_LENGTH}`);
   }
 
   const salt = ciphertext.slice(0, SALT_LENGTH);
@@ -373,8 +404,8 @@ export async function decryptToPayload(
   const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
 
   if (controlData.length < decrypted.length) {
-    throw new Error(
-      `Control data (${controlData.length} bytes) must be >= ciphertext payload (${decrypted.length} bytes)`
+    throw malformedInputError(
+      `control ${controlData.length} < payload ${decrypted.length}`
     );
   }
   const controlSlice = controlData.slice(0, decrypted.length);
@@ -488,19 +519,37 @@ export function encryptText(
   message: string,
   password1: string,
   password2: string,
-  controlData: Uint8Array
+  controlData: Uint8Array,
+  opts?: EncryptTextOptions
 ): Promise<string> {
-  return encryptTextAsync(message, password1, password2, controlData);
+  return encryptTextAsync(message, password1, password2, controlData, opts);
 }
 
 async function encryptTextAsync(
   message: string,
   password1: string,
   password2: string,
-  controlData: Uint8Array
+  controlData: Uint8Array,
+  opts?: EncryptTextOptions
 ): Promise<string> {
   const plaintext = new TextEncoder().encode(message);
-  const { ciphertext } = await encrypt(plaintext, { password1, password2, controlData });
+  const rawPayloadLength = plaintext.length + LENGTH_PREFIX;
+  const padToBucket = opts?.unsafeUnpadded !== true;
+  if (padToBucket) {
+    const bucketLength = bucketedPayloadLength(rawPayloadLength);
+    if (controlData.length < bucketLength) {
+      throw new Error(
+        `Control data (${controlData.length} bytes) must be >= bucketed payload (${bucketLength} bytes); ` +
+        'size controlData with bucketedPayloadLength(message bytes + 4), or pass { unsafeUnpadded: true }'
+      );
+    }
+  }
+  const { ciphertext } = await encrypt(plaintext, {
+    password1,
+    password2,
+    controlData,
+    ...(padToBucket ? { padToBucket: true } : {}),
+  });
   return Buffer.from(ciphertext).toString('hex');
 }
 

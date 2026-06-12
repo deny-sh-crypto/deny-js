@@ -65,36 +65,63 @@ describe('record helper', () => {
     assert.equal(result.decoy.seed!.trim().split(/\s+/).length, 12);
   });
 
-  it('falls back to a generic decoy (does NOT throw) when no typed decoy fits the budget', async () => {
+  it('fails closed when no typed decoy fits the budget', async () => {
     // A 1-char value explicitly typed as stripe-live-key cannot fit any valid
-    // stripe-shaped decoy. The old behaviour threw an uncaught error; the fix
-    // gracefully falls back to a generic decoy of the same length so a single
-    // short field can't crash the whole encryptRecord call.
-    const result = await encryptRecord({
-      real: { tiny: 'x' },
-      explicitTypes: { tiny: 'stripe-live-key' },
-      passwords,
-    });
-    // Decoy must fit the byte budget; real + decoy paths both round-trip.
-    assert.ok(result.decoy.tiny!.length <= 'x'.length);
-    assert.deepEqual(await decryptRecord(result.ciphertext, result.realCtrl, passwords), { tiny: 'x' });
-    assert.deepEqual(
-      await decryptRecord(result.ciphertext, result.decoyCtrl, passwords),
-      { tiny: result.decoy.tiny! },
+    // stripe-shaped decoy. Do not silently downgrade to a generic printable
+    // value, because that makes the typed field fail its own classifier.
+    await assert.rejects(
+      () => encryptRecord({
+        real: { tiny: 'x' },
+        explicitTypes: { tiny: 'stripe-live-key' },
+        passwords,
+      }),
+      /could not generate valid stripe-live-key decoy/,
     );
   });
 
-  it('does not crash encryptRecord on a short checksummed value (postgres-uri)', async () => {
-    // Regression for P1-1: `postgres://localhost` is a valid short DB URI that
-    // classifies as a checksummed/structured type too short to fit a typed decoy.
+  it('fails closed on a short typed URI when no valid typed decoy fits', async () => {
+    await assert.rejects(
+      () => encryptRecord({
+        real: { db: 'postgres://localhost' },
+        passwords,
+      }),
+      /could not generate valid postgres-uri decoy/,
+    );
+  });
+
+  it('normalizes public record decrypt decode failures', async () => {
     const result = await encryptRecord({
-      real: { db: 'postgres://localhost' },
+      real: { name: 'Alex', note: 'secret' },
       passwords,
     });
-    assert.ok(result.decoy.db!.length <= 'postgres://localhost'.length);
-    assert.deepEqual(await decryptRecord(result.ciphertext, result.realCtrl, passwords), {
-      db: 'postgres://localhost',
-    });
+
+    const wrongKey = await decryptRecord(result.ciphertext, result.realCtrl, { p1: 'wrong', p2: 'wrong' })
+      .then(() => null, (err: Error) => err);
+    const truncated = await decryptRecord(result.ciphertext.slice(0, 60), result.realCtrl, passwords)
+      .then(() => null, (err: Error) => err);
+
+    assert.equal(wrongKey?.message, 'record decrypt failed');
+    assert.equal(truncated?.message, 'record decrypt failed');
+    assert.equal(wrongKey?.constructor, truncated?.constructor);
+  });
+
+  it('generates GCP service account decoys with independent identifiers', () => {
+    const real = JSON.stringify({
+      type: 'service_account',
+      project_id: 'real-project-123',
+      private_key_id: '0'.repeat(40),
+      private_key: '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n',
+      client_email: 'prod-admin@real-project-123.iam.gserviceaccount.com',
+      client_id: '123456789012345678901',
+      auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+      token_uri: 'https://oauth2.googleapis.com/token',
+      auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+      client_x509_cert_url: 'https://www.googleapis.com/robot/v1/metadata/x509/prod-admin%40real-project-123.iam.gserviceaccount.com',
+      universe_domain: 'googleapis.com',
+    }, null, 2);
+    const decoy = JSON.parse(generateLocalDecoy(real, 'gcp-service-account-key'));
+    assert.notEqual(decoy.project_id, 'real-project-123');
+    assert.notEqual(String(decoy.client_email).split('@')[0], 'prod-admin');
   });
 
   it('preserves shape contracts for representative local generators', () => {

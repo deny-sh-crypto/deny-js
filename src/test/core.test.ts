@@ -10,6 +10,7 @@ import {
   decryptText,
   deriveKey,
   HEADER_LENGTH,
+  bucketedPayloadLength,
 } from '../index.js';
 
 describe('deny-sh', () => {
@@ -101,6 +102,8 @@ describe('deny-sh', () => {
 
     // P2-1 regression: decrypt() must also reject a too-short control file rather
     // than silently XOR-ing only a prefix and returning garbage with no error.
+    // The public error is now length-free (review P2 #1) so it is not a parsing
+    // oracle; it must still reject (not silently return garbage).
     it('decrypt should reject control data shorter than the ciphertext payload', async () => {
       const message = new TextEncoder().encode('Hello world');
       const controlData = generateControlData(message.length + 4);
@@ -108,7 +111,7 @@ describe('deny-sh', () => {
       const shortControl = generateControlData(3);
       await assert.rejects(
         () => decrypt(ciphertext, { password1: pw1, password2: pw2, controlData: shortControl }),
-        /Control data.*must be/
+        /decrypt failed or malformed input/
       );
     });
   });
@@ -272,7 +275,7 @@ describe('deny-sh', () => {
   describe('text mode', () => {
     it('should encrypt and decrypt text via hex encoding', async () => {
       const message = 'Meet Me At 2pm Tomorrow';
-      const controlData = generateControlData(Buffer.byteLength(message, 'utf8') + 4);
+      const controlData = generateControlData(bucketedPayloadLength(Buffer.byteLength(message, 'utf8') + 4));
 
       const hex = await encryptText(message, pw1, pw2, controlData);
       assert.match(hex, /^[0-9a-f]+$/); // valid hex
@@ -283,7 +286,7 @@ describe('deny-sh', () => {
 
     it('should handle unicode text', async () => {
       const message = 'Привет мир 🌍 こんにちは';
-      const controlData = generateControlData(Buffer.byteLength(message, 'utf8') + 4);
+      const controlData = generateControlData(bucketedPayloadLength(Buffer.byteLength(message, 'utf8') + 4));
 
       const hex = await encryptText(message, pw1, pw2, controlData);
       const decrypted = await decryptText(hex, pw1, pw2, controlData);

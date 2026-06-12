@@ -88,6 +88,7 @@ export type {
   EncryptResult,
   DecryptResult,
   DeniableControlResult,
+  EncryptTextOptions,
 } from './core.js';
 
 export type {

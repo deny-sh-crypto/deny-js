@@ -74,6 +74,34 @@ export interface EncryptHoneyResult {
   honeyType: DecoyType;
 }
 
+/*
+ * SECURITY BOUNDARY — Honey Mode metadata leak (review P2 #2, documented as
+ * intentional). decryptHoney requires two pieces of metadata that callers MUST
+ * persist alongside the ciphertext: `band` and `honeyType`. These are NOT inside
+ * the encrypted envelope, and that is structural, not an oversight:
+ *
+ *   - `band` selects the decrypt-side band-consistency window
+ *     (isWellFormedFrame). It is the input that DECIDES real-vs-honey; it cannot
+ *     live inside the thing it gates without a chicken-and-egg dependency.
+ *   - `honeyType` selects which deterministic generator produces the wrong-
+ *     password fake. The decrypt path needs it BEFORE it has any plaintext.
+ *
+ * Consequence an attacker who seizes the stored record learns: (a) the record is
+ * honey-protected, and (b) the broad class of secret it holds (e.g.
+ * "stripe-live-key"), and (c) its coarse length band. They do NOT learn the
+ * real value, the real length (length privacy holds), or whether any given
+ * decrypt attempt hit the real slot vs a honey fake (uniform output shape +
+ * timing). Honey Mode is opt-in and aimed at the agents/infra tier where the
+ * record schema is already known to the operator; the type/band disclosure is an
+ * accepted trade for a deterministic, cross-SDK, no-stored-authenticator design.
+ *
+ * If a future deployment needs to hide (a)/(b)/(c), the mitigation is to wrap the
+ * whole honey record (ciphertext + band + honeyType) in an OUTER classic
+ * deny.sh envelope, so the honey metadata only appears after a successful outer
+ * decrypt. That is a packaging choice for the caller, not a change to this
+ * primitive.
+ */
+
 /** Ergonomic options bag for the public honey encrypt wrapper. */
 export interface EncryptWithHoneyOptions {
   /** Explicit opt-in. Honey Mode is never inferred or defaulted. */
@@ -209,8 +237,16 @@ export async function decryptHoneyWithBranch(
   honeyType: DecoyType,
   band: number
 ): Promise<DecryptHoneyInternalResult> {
+  // Eligibility is enforced authoritatively at SETUP (encryptHoney / encryptWithHoney
+  // and the server's parseHoneyMeta), so a genuine honey record's type is always
+  // eligible by construction. This decrypt-surface guard is therefore purely
+  // defensive (caller passing a hand-built ineligible type). Per review P2 #3 it
+  // must NOT throw a honey-capability-distinguishing error at the
+  // (potentially attacker-facing) decrypt boundary: it fails with the same
+  // opaque message any malformed/wrong-credential decode uses, so the decrypt
+  // surface has one uniform failure mode regardless of type eligibility.
   if (!isHoneyEligible(honeyType)) {
-    throw new Error(`Honey Mode is not supported for unstructured type "${honeyType}".`);
+    throw new Error('decrypt failed or malformed input');
   }
 
   const { payload, salt, wellFormed, plaintext } = await decryptToPayload(
@@ -223,20 +259,18 @@ export async function decryptHoneyWithBranch(
     band
   );
 
-  if (wellFormed) {
-    // Real or decoy slot: hand back the recovered plaintext unchanged.
-    return { value: textDecoder.decode(plaintext), branch: 'real' };
-  }
-
-  // Wall branch + honey on: synthesise a deterministic typed fake from the
-  // wrong-password decrypt bytes. Seed is salt-bound and type-tagged, so the
-  // fake is stable per wrong password and independent of the real secret.
+  // Always do both branch workloads before selecting output. This keeps the
+  // real/decoy-slot path and wrong-password honey path timing shape aligned
+  // without changing the generator's seed material or draw order.
   const fake = generateHoneyDecoy({
     type: honeyType,
     decryptBytes: payload,
     salt,
   });
-  return { value: fake, branch: 'honey' };
+  const decoded = textDecoder.decode(plaintext);
+  return wellFormed
+    ? { value: decoded, branch: 'real' }
+    : { value: fake, branch: 'honey' };
 }
 
 /**

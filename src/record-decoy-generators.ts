@@ -6,7 +6,10 @@ import {
   bip39FromEntropy,
   base58CheckEncode,
   base58Encode,
+  nhsCheckDigit,
+  passesDeepValidity,
 } from './decoy-engine/validators.js';
+import { matchesShape } from './decoy-engine/classifier.js';
 import type { DecoyType } from './decoy-engine/types.js';
 import { type ByteSource, SeededByteSource, sourcedInt, deriveHoneySeed } from './decoy-engine/seeded-rng.js';
 
@@ -378,7 +381,7 @@ function randomJwt(real: string): string {
   }
   if (out.length > real.length) {
     // Last resort: the header alone may exceed budget only for absurdly short
-    // inputs; chooseDecoy catches the throw and falls back to a generic decoy.
+    // typed inputs; record encryption now fails closed rather than downgrading.
     throw new Error('generated decoy exceeds real value length');
   }
   return out;
@@ -420,18 +423,45 @@ function randomCreditCard(real: string): string {
   return layout.join('');
 }
 
-function randomPrivateKeyPem(real: string): string {
-  const begin = '-----BEGIN PRIVATE KEY-----\n';
-  const end = '\n-----END PRIVATE KEY-----';
-  const budget = real.length - begin.length - end.length;
-  if (budget < 1) throw new Error('generated decoy exceeds real value length');
-  return `${begin}${chars(BASE64URL, budget)}${end}`;
+// Fixed PKCS#8 DER prefix for an Ed25519 private key: SEQUENCE { version=0,
+// AlgorithmIdentifier { 1.3.101.112 }, OCTET STRING { OCTET STRING(32-byte seed) } }.
+// Any 32 bytes appended to this prefix form a structurally valid PKCS#8 Ed25519
+// key that `openssl pkey` / Node `crypto.createPrivateKey` parse without error.
+// Source-of-truth bytes for the cross-SDK ports (Rust/Python/Go reproduce these).
+const ED25519_PKCS8_PREFIX_HEX = '302e020100300506032b657004220420';
+
+/**
+ * Generate a DER-valid Ed25519 PKCS#8 private-key PEM decoy.
+ *
+ * The previous generator emitted a random BASE64URL body with no DER structure,
+ * so `openssl pkey` rejected the decoy while the real key parsed — an instant
+ * real-vs-decoy distinguisher (review #5). We now build a real PKCS#8 Ed25519
+ * key from a fixed 16-byte DER prefix + 32 bytes drawn from the ambient source
+ * (CSPRNG for curated decoys, the seeded honey DRBG for honey). The 48-byte DER
+ * base64-encodes to a fixed 64-char single line, so the PEM is a constant
+ * 118 chars regardless of the real value's length. We ignore `real`'s length
+ * here: a real Ed25519 PKCS#8 key is itself ~119 chars, and a coercer parsing
+ * the PEM cares about DER validity, not exact byte count (the ciphertext bucket
+ * already hides length). For RSA/EC PEMs (longer real values) this Ed25519 form
+ * is still a parseable, plausible private key.
+ */
+function randomPrivateKeyPem(_real: string): string {
+  const prefix = Buffer.from(ED25519_PKCS8_PREFIX_HEX, 'hex');
+  const seed = Buffer.from(sourceBytes(32));
+  const der = Buffer.concat([prefix, seed]);
+  const body = der.toString('base64'); // 48 bytes -> exactly 64 base64 chars, no padding
+  return `-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----`;
 }
 
 function randomSlug(): string {
   const len = 8 + randInt(12);
+  return randomSlugOfLength(len);
+}
+
+function randomSlugOfLength(len: number): string {
+  const n = Math.max(2, len);
   let out = ALPHA_LOWER[randInt(ALPHA_LOWER.length)]!;
-  for (let i = 1; i < len; i++) {
+  for (let i = 1; i < n; i++) {
     out += randInt(10) < 2 ? '-' : ALNUM_LOWER[randInt(ALNUM_LOWER.length)]!;
   }
   if (out.endsWith('-')) out = out.slice(0, -1) + ALNUM_LOWER[randInt(ALNUM_LOWER.length)]!;
@@ -444,19 +474,22 @@ function pemBodyLines(lineCount: number): string {
   return lines.join('\n');
 }
 
-function randomGcpServiceAccountKey(real: string): string {
-  let projectId = randomSlug();
-  let accountName = `svc-${randomSlug()}`.slice(0, 28).replace(/-$/, 'a');
+function randomGcpServiceAccountKey(_real: string): string {
+  let projectLen = 8 + randInt(12);
+  let accountLen = 12 + randInt(12);
   try {
-    const parsed = JSON.parse(real) as Record<string, unknown>;
-    if (typeof parsed['project_id'] === 'string' && /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(parsed['project_id'])) {
-      projectId = parsed['project_id'];
+    const parsed = JSON.parse(_real) as Record<string, unknown>;
+    if (typeof parsed['project_id'] === 'string') {
+      projectLen = Math.min(30, Math.max(6, parsed['project_id'].length));
     }
     if (typeof parsed['client_email'] === 'string') {
-      const local = parsed['client_email'].split('@')[0];
-      if (local && /^[a-z][a-z0-9-]{2,28}[a-z0-9]$/.test(local)) accountName = local;
+      const local = parsed['client_email'].split('@')[0] ?? '';
+      if (local.length > 0) accountLen = Math.min(30, Math.max(4, local.length));
     }
-  } catch { /* keep generated identifiers */ }
+  } catch { /* keep generated lengths */ }
+  const projectId = randomSlugOfLength(projectLen);
+  const prefix = accountLen >= 8 ? 'svc-' : '';
+  const accountName = `${prefix}${randomSlugOfLength(accountLen - prefix.length)}`.slice(0, accountLen).replace(/-$/, 'a');
 
   const obj = {
     type: 'service_account',
@@ -685,8 +718,21 @@ export function generateLocalDecoy(realValue: string, type: DecoyType): string {
       }
       throw new Error('generated decoy exceeds real value length');
     }
-    case 'uk-nhs-number':
-      return digits(realValue.replace(/\s+/g, '').length);
+    case 'uk-nhs-number': {
+      // A real NHS number is 10 digits passing a mod-11 checksum. The old
+      // generator emitted 10 random digits, so ~90% of honey/decoy NHS values
+      // failed mod-11 while every real one passes — a machine-detectable
+      // distinguisher (review #7). Draw a 9-digit body and append the computed
+      // mod-11 check digit. If the body yields an invalid check digit (the
+      // mod-11==10 case, ~1 in 11), redraw the body deterministically from the
+      // same ambient stream until a valid check digit exists.
+      for (let attempt = 0; attempt < 64; attempt++) {
+        const body = digits(9);
+        const check = nhsCheckDigit(body);
+        if (check !== null) return `${body}${check}`;
+      }
+      throw new Error('could not generate valid NHS check digit');
+    }
     case 'us-ssn':
       return `${100 + randInt(799)}-${10 + randInt(90)}-${1000 + randInt(9000)}`;
     case 'uk-ni-number':
@@ -939,6 +985,25 @@ export interface HoneyDecoyParams {
  * (sourcedInt), and each generator's draw order must be replicated byte-exactly
  * in the Rust / Python / Go ports, or decrypt diverges across languages.
  */
+/**
+ * Centralized plausibility gate (review #8). Both the curated record-decoy path
+ * (`record.ts::chooseDecoy`) and the honey path generate type-correct decoys,
+ * but historically the honey path called `generateLocalDecoy()` directly and so
+ * skipped the `matchesShape()` + `passesDeepValidity()` acceptance check that
+ * `chooseDecoy` applies. A type whose generator is only probabilistically valid
+ * (or whose validator is stronger than its generator) could therefore yield a
+ * honey answer that is easier to disprove than a curated decoy — a real-vs-honey
+ * distinguisher. This is the single acceptance predicate used by BOTH paths.
+ *
+ * For every current honey-eligible type the generator emits a plausible value on
+ * the first draw (verified across the full type set), so this gate is a
+ * never-fires safety net that pins the invariant for future generator/validator
+ * changes rather than altering any current KAT output.
+ */
+export function isPlausibleDecoyValue(value: string, type: DecoyType): boolean {
+  return matchesShape(value, type) && passesDeepValidity(value, type);
+}
+
 export function generateHoneyDecoy(params: HoneyDecoyParams): string {
   const { type, decryptBytes, salt } = params;
   if (!isHoneyEligible(type)) {
@@ -946,6 +1011,28 @@ export function generateHoneyDecoy(params: HoneyDecoyParams): string {
   }
   const lenHint = params.realLengthHint ?? defaultLengthForType(type);
   const dummyReal = dummyRealForType(type, lenHint);
-  const seed = deriveHoneySeed(decryptBytes, salt, type);
-  return withSeededSource(seed, () => generateLocalDecoy(dummyReal, type));
+  // Plausibility gate (review #8): the honey answer must clear the SAME bar a
+  // curated record decoy clears (matchesShape + passesDeepValidity), so a honey
+  // value can never be easier to disprove than a curated decoy. Attempt 0 uses
+  // the canonical seed (deriveHoneySeed(..., type)) and, for every current
+  // honey-eligible type, produces a plausible value on the first try — so the
+  // KAT vectors are unchanged by this gate. The deterministic re-seed retry
+  // (typeTag suffixed with a retry counter) is a future-proofing path for types
+  // whose generator is only probabilistically valid; it is part of the cross-SDK
+  // contract but is never exercised by the v1 type set.
+  for (let attempt = 0; attempt < HONEY_PLAUSIBILITY_RETRIES; attempt++) {
+    const typeTag = attempt === 0 ? type : `${type}#retry${attempt}`;
+    const seed = deriveHoneySeed(decryptBytes, salt, typeTag);
+    const candidate = withSeededSource(seed, () => generateLocalDecoy(dummyReal, type));
+    if (isPlausibleDecoyValue(candidate, type)) return candidate;
+  }
+  throw new Error(`Honey Mode could not generate a plausible "${type}" value`);
 }
+
+/**
+ * Max deterministic re-seed attempts for the honey plausibility gate. Attempt 0
+ * is the canonical seed; >0 suffixes the typeTag with a retry counter. Part of
+ * the cross-SDK contract (ports must use the same bound), though unreachable for
+ * the v1 type set, which is first-draw-plausible for every honey-eligible type.
+ */
+const HONEY_PLAUSIBILITY_RETRIES = 16;

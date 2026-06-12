@@ -9,7 +9,7 @@
  *   deny-sh decrypt  -i input.enc -p1 "pass1" -p2 "pass2" -c control.dat
  *   deny-sh deny     -i input.enc -p1 "pass1" -p2 "pass2" -m "fake message" [-o fake-control.dat]
  *   deny-sh generate -s 1024 [-o control.dat]
- *   deny-sh text-encrypt -m "message" -p1 "pass1" -p2 "pass2" [-c control.dat]
+ *   deny-sh text-encrypt -m "message" -p1 "pass1" -p2 "pass2" [-c control.dat] [--unsafe-unpadded]
  *   deny-sh text-decrypt -i "hex..." -p1 "pass1" -p2 "pass2" -c control.dat
  *   deny-sh demo
  *   deny-sh protect
@@ -28,9 +28,9 @@ import {
   encryptHoney,
   generateDeniableControl,
   generateControlData,
-  encryptText,
   decryptText,
   isHoneyEligible,
+  bucketedPayloadLength,
 } from './index.js';
 import { KNOWN_TYPES, type DecoyType } from './decoy-engine/types.js';
 import { bold, cyan, dim, green, red, yellow, banner, success, error as err, progressBar } from './utils/display.js';
@@ -148,19 +148,29 @@ async function cmdEncrypt(flags: Record<string, string>): Promise<void> {
   }
 
   let controlData: Uint8Array;
+  let shouldWriteControl = false;
   if (controlPath && existsSync(controlPath)) {
     controlData = new Uint8Array(readFileSync(resolve(controlPath)));
-    if (controlData.length < plaintext.length) {
-      console.error(`Error: Control file (${controlData.length} bytes) must be >= message (${plaintext.length} bytes)`);
+    if (controlData.length < plaintext.length + 4) {
+      console.error(`Error: Control file (${controlData.length} bytes) must be >= message payload (${plaintext.length + 4} bytes)`);
       process.exit(1);
     }
   } else {
-    controlData = generateControlData(Math.max(plaintext.length + 4, 256));
-    writeFileSync(resolve(controlOutPath), controlData);
-    console.log(`Generated control file: ${controlOutPath} (${controlData.length} bytes)`);
+    controlData = generateControlData(Math.max(bucketedPayloadLength(plaintext.length + 4), 256));
+    shouldWriteControl = true;
   }
 
-  const { ciphertext } = await encrypt(plaintext, { password1: pw1, password2: pw2, controlData });
+  const { ciphertext, controlBytes } = await encrypt(plaintext, {
+    password1: pw1,
+    password2: pw2,
+    controlData,
+    bucketSize: Math.max(bucketedPayloadLength(plaintext.length + 4), 256),
+  });
+  if (shouldWriteControl) {
+    const persistedControl = controlData.slice(0, controlBytes);
+    writeFileSync(resolve(controlOutPath), persistedControl);
+    console.log(`Generated control file: ${controlOutPath} (${persistedControl.length} bytes)`);
+  }
   writeFileSync(resolve(outputPath), ciphertext);
   console.log(`Encrypted: ${outputPath} (${ciphertext.length} bytes)`);
 }
@@ -235,19 +245,34 @@ async function cmdTextEncrypt(flags: Record<string, string>): Promise<void> {
   const pw2 = requireFlag(flags, 'p2', 'Password 2');
   const controlPath = flags['c'];
   const controlOutPath = flags['co'] || 'control.dat';
+  const unsafeUnpadded = flags['unsafe-unpadded'] === 'true';
 
   let controlData: Uint8Array;
   const msgBytes = Buffer.byteLength(message, 'utf8');
+  const controlSize = unsafeUnpadded
+    ? msgBytes + 4
+    : Math.max(bucketedPayloadLength(msgBytes + 4), 256);
 
+  let shouldWriteControl = false;
   if (controlPath && existsSync(controlPath)) {
     controlData = new Uint8Array(readFileSync(resolve(controlPath)));
   } else {
-    controlData = generateControlData(Math.max(msgBytes + 4, 256));
-    writeFileSync(resolve(controlOutPath), controlData);
-    console.error(`Generated control file: ${controlOutPath}`);
+    controlData = generateControlData(controlSize);
+    shouldWriteControl = true;
   }
 
-  const hex = await encryptText(message, pw1, pw2, controlData);
+  const plaintext = new TextEncoder().encode(message);
+  const { ciphertext, controlBytes } = await encrypt(plaintext, {
+    password1: pw1,
+    password2: pw2,
+    controlData,
+    ...(unsafeUnpadded ? {} : { bucketSize: controlSize }),
+  });
+  const hex = Buffer.from(ciphertext).toString('hex');
+  if (shouldWriteControl) {
+    writeFileSync(resolve(controlOutPath), controlData.slice(0, controlBytes));
+    console.error(`Generated control file: ${controlOutPath}`);
+  }
   console.log(hex);
 }
 

@@ -3,7 +3,15 @@
  * Runs encryption/decryption round-trips and deniability tests.
  */
 
-import { encrypt, decrypt, generateControlData, generateDeniableControl, encryptText, decryptText } from '../index.js';
+import {
+  encrypt,
+  decrypt,
+  generateControlData,
+  generateDeniableControl,
+  encryptText,
+  decryptText,
+  bucketedPayloadLength,
+} from '../index.js';
 import { banner, bold, green, red, dim, success as passLog } from '../utils/display.js';
 
 interface TestResult {
@@ -139,7 +147,7 @@ export async function cmdVerify(_flags: Record<string, string>): Promise<void> {
   // 7. Text mode round-trip
   await test('Text encrypt/decrypt round-trip (hex)', async () => {
     const msg = 'Text mode test: emoji 🔐 works?';
-    const controlData = generateControlData(Buffer.byteLength(msg, 'utf8') + 4);
+    const controlData = generateControlData(bucketedPayloadLength(Buffer.byteLength(msg, 'utf8') + 4));
     const hex = await encryptText(msg, 'p1', 'p2', controlData);
     const result = await decryptText(hex, 'p1', 'p2', controlData);
     if (result !== msg) return `Got "${result}"`;

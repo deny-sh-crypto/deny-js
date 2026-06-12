@@ -46,6 +46,7 @@ export interface EncryptRecordResult {
 const MAGIC = new Uint8Array([0x44, 0x52, 0x43, 0x31]); // DRC1
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const OPAQUE_RECORD_DECRYPT_ERROR = 'record decrypt failed';
 
 export function classifyFieldValue(value: string): DecoyType {
   return classifyByRegex(value) ?? 'generic';
@@ -162,11 +163,7 @@ function chooseDecoy(realValue: string, type: DecoyType, supplied?: string): str
 
   // Generators for checksummed types emit valid values directly, so this loop
   // normally terminates on the first iteration; the extra attempts cover the
-  // rare case where length budget + checksum constraints collide. A real value
-  // too short to fit ANY valid decoy of its type (e.g. `postgres://localhost`,
-  // shorter than the minimum a postgres-uri decoy needs) makes the generator
-  // THROW rather than return; catch that so a single short field can't crash
-  // the whole encryptRecord call.
+  // rare case where length budget + checksum constraints collide.
   for (let i = 0; i < 50; i++) {
     let generated: string;
     try {
@@ -177,11 +174,13 @@ function chooseDecoy(realValue: string, type: DecoyType, supplied?: string): str
     if (byteLen(generated) <= byteLen(realValue) && plausible(generated)) return generated;
   }
 
-  // Last-resort fallback: a generic printable string of exactly realValue's
-  // length always fits the byte budget and never throws (no checksum constraint).
-  // It will not match a checksummed type's shape, but for a value so short that
-  // no valid typed decoy exists, a non-crashing generic decoy is strictly better
-  // than a thrown exception that takes down the caller.
+  if (type !== 'generic' && type !== 'freeform-secret') {
+    throw new Error(
+      `could not generate valid ${type} decoy within real value budget; ` +
+      'provide an explicit valid decoy or use a longer real value'
+    );
+  }
+
   const fallback = generateLocalDecoy(realValue, 'generic');
   if (byteLen(fallback) <= byteLen(realValue)) return fallback;
 
@@ -253,10 +252,14 @@ export async function decryptRecord(
   controlData: Uint8Array,
   passwords: { p1: string; p2: string }
 ): Promise<Record<string, string>> {
-  const { plaintext } = await decrypt(ciphertext, {
-    password1: passwords.p1,
-    password2: passwords.p2,
-    controlData,
-  });
-  return decodeRecordFrame(plaintext);
+  try {
+    const { plaintext } = await decrypt(ciphertext, {
+      password1: passwords.p1,
+      password2: passwords.p2,
+      controlData,
+    });
+    return decodeRecordFrame(plaintext);
+  } catch {
+    throw new Error(OPAQUE_RECORD_DECRYPT_ERROR);
+  }
 }
