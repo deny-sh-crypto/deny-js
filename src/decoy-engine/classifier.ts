@@ -117,8 +117,155 @@ const RE_US_SSN = /^[0-9]{3}-[0-9]{2}-[0-9]{4}$/;
 //   enforces the prefix exclusions.
 const RE_UK_NI = /^[A-Z]{2}[0-9]{6}[A-D]$/;
 
+// us-npi: 10 digits. Deep validity prepends 80840 and checks Luhn.
+const RE_US_NPI = /^[0-9]{10}$/;
+// us-dea-number: two uppercase letters + seven digits; last digit is checksum.
+const RE_US_DEA = /^[A-Z]{2}[0-9]{7}$/;
+const MBI_ALPHA = 'ACDEFGHJKMNPQRTUVWXY';
+const MBI_ALNUM = `${MBI_ALPHA}0-9`;
+// us-medicare-mbi: C A AN N A AN N A A N N; excludes S L O I B Z.
+const RE_US_MEDICARE_MBI = new RegExp(`^[1-9][${MBI_ALPHA}][${MBI_ALNUM}][0-9][${MBI_ALPHA}][${MBI_ALNUM}][0-9][${MBI_ALPHA}][${MBI_ALPHA}][0-9][0-9]$`);
+// us-ndc: National Drug Code labeler-product-package variants.
+const RE_US_NDC = /^[0-9]{4,5}-[0-9]{3,4}-[0-9]{1,2}$/;
+
+// lei: Legal Entity Identifier, 18 uppercase alnum + 2 check digits.
+const RE_LEI = /^[A-Z0-9]{18}[0-9]{2}$/;
+// isin: ISO 6166 securities identifier, 2-letter country + 9 alnum + check digit.
+const RE_ISIN = /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/;
+// cusip: 8 CUSIP body chars + numeric check digit.
+const RE_CUSIP = /^[A-Z0-9*@#]{8}[0-9]$/;
+// us-ein: NN-NNNNNNN; valid campus prefix enforced in validators.ts.
+const RE_US_EIN = /^[0-9]{2}-[0-9]{7}$/;
+// duns: 9 digits. Explicit-type only in classifyByRegex due 9-digit collisions.
+const RE_DUNS = /^[0-9]{9}$/;
+// us-routing-number: 9 digits with ABA mod-10 checksum.
+const RE_US_ROUTING_NUMBER = /^[0-9]{9}$/;
+// us-bank-account: 8-12 digits. Explicit-type only due digit-shape collisions.
+const RE_US_BANK_ACCOUNT = /^[0-9]{8,12}$/;
+// bic-swift: fixed canonical 11-char BIC, bank+country letters, location+branch alnum.
+const RE_BIC_SWIFT = /^[A-Z]{6}[A-Z0-9]{5}$/;
+// us-itin: Taxpayer ID for non-SSN filers. Valid group ranges in validators.ts.
+const RE_US_ITIN = /^9[0-9]{2}-[0-9]{2}-[0-9]{4}$/;
+// passport-mrz: ICAO Doc 9303 TD3, two 44-character machine-readable lines.
+const RE_PASSPORT_MRZ = /^[A-Z0-9<]{44}\n[A-Z0-9<]{44}$/;
+// us-passport: 9 alphanumeric chars. Explicit-type only due 9-alnum collisions.
+const RE_US_PASSPORT = /^[A-Z0-9]{9}$/;
+// uscis-number: 9 digits. Explicit-type only due 9-digit collisions.
+const RE_USCIS_NUMBER = /^[0-9]{9}$/;
+// aadhaar: 12 digits, first digit 2-9, Verhoeff check in helper below.
+const RE_AADHAAR = /^[2-9][0-9]{11}$/;
+// eIDAS PersonIdentifier canonical form: sender country / destination country / id.
+const RE_EIDAS_ID = /^[A-Z]{2}\/[A-Z]{2}\/[A-Z0-9]{1,20}$/;
+// email-address: pragmatic local@domain.tld structure.
+const RE_EMAIL_ADDRESS = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z]{2,24})+$/;
+// ipv4-address: dotted quad with 0-255 octets.
+const RE_IPV4_ADDRESS = /^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$/;
+// ipv6-address: canonical full-form only, 8 groups of 4 hex chars, no ::.
+const RE_IPV6_ADDRESS = /^[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}$/;
+// mac-address: six colon-separated hex octets.
+const RE_MAC_ADDRESS = /^[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}$/;
+// imei: 15 digits, checksum-gated in classifier.
+const RE_IMEI = /^[0-9]{15}$/;
+// vin: 17 chars, excludes I/O/Q, checksum-gated in classifier.
+const RE_VIN = /^[A-HJ-NPR-Z0-9]{17}$/;
+// uuid: RFC 4122 v4, version nibble 4, variant 8/9/a/b.
+const RE_UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 // phone-e164: + then 8-15 digits (E.164 max length 15 including country code)
 const RE_E164 = /^\+[1-9][0-9]{7,14}$/;
+
+function looksLikeAbaRoutingNumber(value: string): boolean {
+  if (!RE_US_ROUTING_NUMBER.test(value)) return false;
+  const weights = [3, 7, 1];
+  let sum = 0;
+  for (let i = 0; i < value.length; i++) {
+    sum += (value.charCodeAt(i) - 48) * weights[i % 3]!;
+  }
+  return sum % 10 === 0;
+}
+
+function looksLikeItin(value: string): boolean {
+  if (!RE_US_ITIN.test(value)) return false;
+  const group = Number(value.slice(4, 6));
+  return (group >= 50 && group <= 65)
+    || (group >= 70 && group <= 88)
+    || (group >= 90 && group <= 92)
+    || (group >= 94 && group <= 99);
+}
+
+const VERHOEFF_D = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+  [1, 2, 3, 4, 0, 6, 7, 8, 9, 5],
+  [2, 3, 4, 0, 1, 7, 8, 9, 5, 6],
+  [3, 4, 0, 1, 2, 8, 9, 5, 6, 7],
+  [4, 0, 1, 2, 3, 9, 5, 6, 7, 8],
+  [5, 9, 8, 7, 6, 0, 4, 3, 2, 1],
+  [6, 5, 9, 8, 7, 1, 0, 4, 3, 2],
+  [7, 6, 5, 9, 8, 2, 1, 0, 4, 3],
+  [8, 7, 6, 5, 9, 3, 2, 1, 0, 4],
+  [9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+] as const;
+const VERHOEFF_P = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+  [1, 5, 7, 6, 2, 8, 3, 0, 9, 4],
+  [5, 8, 0, 3, 7, 9, 6, 1, 4, 2],
+  [8, 9, 1, 6, 0, 4, 3, 5, 2, 7],
+  [9, 4, 5, 3, 1, 2, 6, 8, 7, 0],
+  [4, 2, 8, 6, 5, 7, 3, 9, 0, 1],
+  [2, 7, 9, 3, 8, 0, 6, 4, 1, 5],
+  [7, 0, 4, 6, 9, 1, 3, 2, 5, 8],
+] as const;
+
+function looksLikeAadhaar(value: string): boolean {
+  if (!RE_AADHAAR.test(value)) return false;
+  let c = 0;
+  for (let i = 0; i < value.length; i++) {
+    const digit = value.charCodeAt(value.length - 1 - i) - 48;
+    c = VERHOEFF_D[c]![VERHOEFF_P[i % 8]![digit]!]!;
+  }
+  return c === 0;
+}
+
+function looksLikeImei(value: string): boolean {
+  if (!RE_IMEI.test(value)) return false;
+  let sum = 0;
+  let alternate = false;
+  for (let i = value.length - 1; i >= 0; i--) {
+    let d = value.charCodeAt(i) - 48;
+    if (alternate) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+    alternate = !alternate;
+  }
+  return sum % 10 === 0;
+}
+
+function vinTranslit(ch: string): number {
+  if (ch >= '0' && ch <= '9') return ch.charCodeAt(0) - 48;
+  const map: Record<string, number> = {
+    A: 1, B: 2, C: 3, D: 4, E: 5, F: 6, G: 7, H: 8,
+    J: 1, K: 2, L: 3, M: 4, N: 5, P: 7, R: 9,
+    S: 2, T: 3, U: 4, V: 5, W: 6, X: 7, Y: 8, Z: 9,
+  };
+  return map[ch] ?? -1;
+}
+
+function looksLikeVin(value: string): boolean {
+  const vin = value.toUpperCase();
+  if (!RE_VIN.test(vin)) return false;
+  const weights = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
+  let sum = 0;
+  for (let i = 0; i < vin.length; i++) {
+    const n = vinTranslit(vin[i]!);
+    if (n < 0) return false;
+    sum += n * weights[i]!;
+  }
+  const rem = sum % 11;
+  const check = rem === 10 ? 'X' : String(rem);
+  return vin[8] === check;
+}
 
 /** Try to decode a base64url segment back to a UTF-8 string. */
 function base64urlDecode(seg: string): string | null {
@@ -233,14 +380,35 @@ export function classifyByRegex(hint: string): DecoyType | null {
   if (RE_DISCORD_BOT.test(v)) return 'discord-bot-token';
 
   // Identity numbers (digit-only or digit+letter shapes)
-  if (RE_US_SSN.test(v)) return 'us-ssn';
+  if (RE_US_SSN.test(v) && !looksLikeItin(v)) return 'us-ssn';
   if (RE_UK_NI.test(v)) return 'uk-ni-number';
+  if (RE_US_DEA.test(v)) return 'us-dea-number';
+  if (RE_US_MEDICARE_MBI.test(v)) return 'us-medicare-mbi';
+  if (RE_ISIN.test(v)) return 'isin';
+  if (looksLikeAbaRoutingNumber(v)) return 'us-routing-number';
+  if (RE_CUSIP.test(v)) return 'cusip';
+  if (RE_US_EIN.test(v)) return 'us-ein';
+  if (RE_BIC_SWIFT.test(v)) return 'bic-swift';
+  if (looksLikeItin(v)) return 'us-itin';
+  if (RE_PASSPORT_MRZ.test(v)) return 'passport-mrz';
+  if (looksLikeAadhaar(v)) return 'aadhaar';
+  if (RE_EIDAS_ID.test(v)) return 'eidas-id';
+  if (RE_EMAIL_ADDRESS.test(v)) return 'email-address';
+  if (RE_IPV4_ADDRESS.test(v)) return 'ipv4-address';
+  if (RE_IPV6_ADDRESS.test(v)) return 'ipv6-address';
+  if (RE_MAC_ADDRESS.test(v)) return 'mac-address';
+  if (looksLikeImei(v)) return 'imei';
+  if (looksLikeVin(v)) return 'vin';
+  if (RE_UUID_V4.test(v)) return 'uuid';
   if (RE_E164.test(v)) return 'phone-e164';
 
   // Numeric-ish checks last (cheap but very generic shape)
+  if (RE_US_NDC.test(v)) return 'us-ndc';
+  if (RE_US_NPI.test(v)) return 'us-npi';
   // Credit-card strings may include spaces; strip and test digits.
   const stripped = v.replace(/[\s-]/g, '');
   if (RE_CC.test(stripped)) return 'credit-card';
+  if (RE_LEI.test(v)) return 'lei';
   if (RE_IBAN.test(v.replace(/\s+/g, ''))) return 'iban';
 
   // NHS comes after CC (CC takes precedence since most 10-digit strings are
@@ -354,6 +522,56 @@ export function matchesShape(value: string, type: DecoyType): boolean {
       return RE_US_SSN.test(value);
     case 'uk-ni-number':
       return RE_UK_NI.test(value.replace(/\s+/g, ''));
+    case 'us-npi':
+      return RE_US_NPI.test(value);
+    case 'us-dea-number':
+      return RE_US_DEA.test(value);
+    case 'us-medicare-mbi':
+      return RE_US_MEDICARE_MBI.test(value);
+    case 'us-ndc':
+      return RE_US_NDC.test(value);
+    case 'lei':
+      return RE_LEI.test(value);
+    case 'isin':
+      return RE_ISIN.test(value);
+    case 'cusip':
+      return RE_CUSIP.test(value);
+    case 'us-ein':
+      return RE_US_EIN.test(value);
+    case 'duns':
+      return RE_DUNS.test(value);
+    case 'us-routing-number':
+      return RE_US_ROUTING_NUMBER.test(value);
+    case 'us-bank-account':
+      return RE_US_BANK_ACCOUNT.test(value);
+    case 'bic-swift':
+      return RE_BIC_SWIFT.test(value);
+    case 'us-itin':
+      return RE_US_ITIN.test(value);
+    case 'passport-mrz':
+      return RE_PASSPORT_MRZ.test(value);
+    case 'us-passport':
+      return RE_US_PASSPORT.test(value);
+    case 'uscis-number':
+      return RE_USCIS_NUMBER.test(value);
+    case 'aadhaar':
+      return RE_AADHAAR.test(value);
+    case 'eidas-id':
+      return RE_EIDAS_ID.test(value);
+    case 'email-address':
+      return RE_EMAIL_ADDRESS.test(value);
+    case 'ipv4-address':
+      return RE_IPV4_ADDRESS.test(value);
+    case 'ipv6-address':
+      return RE_IPV6_ADDRESS.test(value);
+    case 'mac-address':
+      return RE_MAC_ADDRESS.test(value);
+    case 'imei':
+      return RE_IMEI.test(value);
+    case 'vin':
+      return RE_VIN.test(value.toUpperCase());
+    case 'uuid':
+      return RE_UUID_V4.test(value);
     case 'phone-e164':
       return RE_E164.test(value);
     case 'generic':

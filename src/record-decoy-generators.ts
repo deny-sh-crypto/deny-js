@@ -7,6 +7,14 @@ import {
   base58CheckEncode,
   base58Encode,
   nhsCheckDigit,
+  deaCheckDigit,
+  leiCheckDigits,
+  isinCheckDigit,
+  cusipCheckDigit,
+  abaRoutingCheckDigit,
+  mrzCheckDigit,
+  verhoeffCheckDigit,
+  vinCheckDigit,
   passesDeepValidity,
 } from './decoy-engine/validators.js';
 import { matchesShape } from './decoy-engine/classifier.js';
@@ -39,6 +47,30 @@ const HEX = '0123456789abcdef';
 const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const NI_FIRST = 'ABCEGHJKLMNOPRSTWXYZ';
 const NI_SECOND = 'ABCEGHJKLMNPRSTWXYZ';
+const MBI_ALPHA = 'ACDEFGHJKMNPQRTUVWXY';
+const MBI_ALNUM = `${MBI_ALPHA}0123456789`;
+const ITIN_GROUPS = [
+  '50', '51', '52', '53', '54', '55', '56', '57', '58', '59',
+  '60', '61', '62', '63', '64', '65', '70', '71', '72', '73',
+  '74', '75', '76', '77', '78', '79', '80', '81', '82', '83',
+  '84', '85', '86', '87', '88', '90', '91', '92', '94', '95',
+  '96', '97', '98', '99',
+];
+const COUNTRY_CODES = ['US', 'GB', 'DE', 'FR', 'ES', 'IT', 'AT', 'NL', 'SE', 'IE', 'IN'];
+const MRZ_COUNTRY_CODES = ['USA', 'GBR', 'DEU', 'FRA', 'ESP', 'ITA', 'AUT', 'NLD', 'SWE', 'IRL', 'IND'];
+const EMAIL_LOCALS = ['alex', 'admin', 'billing', 'ops', 'support', 'nora', 'sam'];
+const EMAIL_DOMAINS = ['acme', 'northstar', 'ledger', 'fieldops', 'exampleco'];
+const EMAIL_TLDS = ['com', 'net', 'io', 'co'];
+const VIN_CHARS = 'ABCDEFGHJKLMNPRSTUVWXYZ0123456789';
+const EIN_PREFIXES = [
+  '01', '02', '03', '04', '05', '06', '10', '11', '12', '13', '14', '15', '16',
+  '20', '21', '22', '23', '24', '25', '26', '27', '30', '31', '32', '33', '34',
+  '35', '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47',
+  '48', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61',
+  '62', '63', '64', '65', '66', '67', '68', '71', '72', '73', '74', '75', '76',
+  '77', '80', '81', '82', '83', '84', '85', '86', '87', '88', '90', '91', '92',
+  '93', '94', '95', '98', '99',
+];
 
 function randInt(max: number): number {
   if (max <= 0) return 0;
@@ -616,6 +648,65 @@ function randomBitcoinWif(realLen: number): string {
   return wif;
 }
 
+function randomPassportMrz(realLen: number): string {
+  boundedLen(realLen, 0, 89, 89);
+  const issuer = MRZ_COUNTRY_CODES[randInt(MRZ_COUNTRY_CODES.length)]!;
+  const nationality = issuer;
+  const names = `${chars('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 7)}<<${chars('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 6)}`;
+  const line1 = `P<${issuer}${names}`.padEnd(44, '<').slice(0, 44);
+  const passportNumber = chars(ALNUM_UPPER, 9);
+  const birth = `${40 + randInt(50)}${String(1 + randInt(12)).padStart(2, '0')}${String(1 + randInt(28)).padStart(2, '0')}`;
+  const sex = 'MF<'[randInt(3)]!;
+  const expiry = `${26 + randInt(20)}${String(1 + randInt(12)).padStart(2, '0')}${String(1 + randInt(28)).padStart(2, '0')}`;
+  const personal = chars(`${ALNUM_UPPER}<`, 14);
+  const docCheck = String(mrzCheckDigit(passportNumber));
+  const birthCheck = String(mrzCheckDigit(birth));
+  const expiryCheck = String(mrzCheckDigit(expiry));
+  const personalCheck = String(mrzCheckDigit(personal));
+  const composite = `${passportNumber}${docCheck}${birth}${birthCheck}${expiry}${expiryCheck}${personal}${personalCheck}`;
+  const line2 = `${passportNumber}${docCheck}${nationality}${birth}${birthCheck}${sex}${expiry}${expiryCheck}${personal}${personalCheck}${mrzCheckDigit(composite)}`;
+  return `${line1}\n${line2}`;
+}
+
+function randomEmailAddress(realLen: number): string {
+  const locals = EMAIL_LOCALS.filter((local) => local.length + 1 + 2 + 1 + 2 <= realLen);
+  const local = locals.length > 0 ? locals[randInt(locals.length)]! : 'a';
+  const domains = EMAIL_DOMAINS.filter((domain) => local.length + 1 + domain.length + 1 + 2 <= realLen);
+  const domain = domains.length > 0 ? domains[randInt(domains.length)]! : 'b';
+  const tlds = EMAIL_TLDS.filter((tld) => local.length + 1 + domain.length + 1 + tld.length <= realLen);
+  if (tlds.length === 0) throw new Error('generated decoy exceeds real value length');
+  return `${local}@${domain}.${tlds[randInt(tlds.length)]}`;
+}
+
+function randomIpv6Address(realLen: number): string {
+  boundedLen(realLen, 0, 39, 39);
+  return Array.from({ length: 8 }, () => chars(HEX, 4)).join(':');
+}
+
+function randomMacAddress(realLen: number): string {
+  boundedLen(realLen, 0, 17, 17);
+  const octets = Array.from(sourceBytes(6));
+  octets[0] = (octets[0]! | 0x02) & 0xfe;
+  return octets.map((b) => b.toString(16).padStart(2, '0')).join(':');
+}
+
+function randomVin(realLen: number): string {
+  boundedLen(realLen, 0, 17, 17);
+  const chars17 = Array.from({ length: 17 }, () => VIN_CHARS[randInt(VIN_CHARS.length)]!);
+  chars17[8] = '0';
+  chars17[8] = vinCheckDigit(chars17.join(''));
+  return chars17.join('');
+}
+
+function randomUuidV4(realLen: number): string {
+  boundedLen(realLen, 0, 36, 36);
+  const bytes = sourceBytes(16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function generateLocalDecoy(realValue: string, type: DecoyType): string {
   const realLen = realValue.length;
   switch (type) {
@@ -737,6 +828,91 @@ export function generateLocalDecoy(realValue: string, type: DecoyType): string {
       return `${100 + randInt(799)}-${10 + randInt(90)}-${1000 + randInt(9000)}`;
     case 'uk-ni-number':
       return `${NI_FIRST[randInt(NI_FIRST.length)]}${NI_SECOND[randInt(NI_SECOND.length)]}${digits(6)}${'ABCD'[randInt(4)]}`;
+    case 'us-npi': {
+      const body = digits(9);
+      return `${body}${luhnCheckDigit(`80840${body}`)}`;
+    }
+    case 'us-dea-number': {
+      const prefix = chars('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 2);
+      const body = digits(6);
+      return `${prefix}${body}${deaCheckDigit(body)}`;
+    }
+    case 'us-medicare-mbi':
+      return `${1 + randInt(9)}${chars(MBI_ALPHA, 1)}${chars(MBI_ALNUM, 1)}${digits(1)}${chars(MBI_ALPHA, 1)}${chars(MBI_ALNUM, 1)}${digits(1)}${chars(MBI_ALPHA, 2)}${digits(2)}`;
+    case 'us-ndc':
+      return `${digits(5)}-${digits(4)}-${digits(2)}`;
+    case 'lei': {
+      boundedLen(realLen, 0, 20, 20);
+      const body = chars(ALNUM_UPPER, 18);
+      return `${body}${leiCheckDigits(body)}`;
+    }
+    case 'isin': {
+      boundedLen(realLen, 0, 12, 12);
+      const body = `${chars('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 2)}${chars(ALNUM_UPPER, 9)}`;
+      return `${body}${isinCheckDigit(body)}`;
+    }
+    case 'cusip': {
+      boundedLen(realLen, 0, 9, 9);
+      const body = chars(`${ALNUM_UPPER}*@#`, 8);
+      return `${body}${cusipCheckDigit(body)}`;
+    }
+    case 'us-ein':
+      boundedLen(realLen, 0, 10, 10);
+      return `${EIN_PREFIXES[randInt(EIN_PREFIXES.length)]}-${digits(7)}`;
+    case 'duns':
+      boundedLen(realLen, 0, 9, 9);
+      return digits(9);
+    case 'us-routing-number': {
+      boundedLen(realLen, 0, 9, 9);
+      const body = digits(8);
+      return `${body}${abaRoutingCheckDigit(body)}`;
+    }
+    case 'us-bank-account': {
+      const len = Math.max(8, Math.min(12, realLen));
+      boundedLen(realLen, 0, 8, len);
+      return digits(len);
+    }
+    case 'bic-swift':
+      boundedLen(realLen, 0, 11, 11);
+      return `${chars('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 4)}${chars('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 2)}${chars(ALNUM_UPPER, 2)}${chars(ALNUM_UPPER, 3)}`;
+    case 'us-itin':
+      boundedLen(realLen, 0, 11, 11);
+      return `9${digits(2)}-${ITIN_GROUPS[randInt(ITIN_GROUPS.length)]}-${digits(4)}`;
+    case 'passport-mrz':
+      return randomPassportMrz(realLen);
+    case 'us-passport':
+      boundedLen(realLen, 0, 9, 9);
+      return chars(ALNUM_UPPER, 9);
+    case 'uscis-number':
+      boundedLen(realLen, 0, 9, 9);
+      return digits(9);
+    case 'aadhaar': {
+      boundedLen(realLen, 0, 12, 12);
+      const body = `${2 + randInt(8)}${digits(10)}`;
+      return `${body}${verhoeffCheckDigit(body)}`;
+    }
+    case 'eidas-id': {
+      const bodyLen = Math.max(1, Math.min(20, realLen - 6));
+      boundedLen(realLen, 6, 1, bodyLen);
+      return `${COUNTRY_CODES[randInt(COUNTRY_CODES.length)]}/${COUNTRY_CODES[randInt(COUNTRY_CODES.length)]}/${chars(ALNUM_UPPER, bodyLen)}`;
+    }
+    case 'email-address':
+      return randomEmailAddress(realLen);
+    case 'ipv4-address':
+      return `${randInt(256)}.${randInt(256)}.${randInt(256)}.${randInt(256)}`;
+    case 'ipv6-address':
+      return randomIpv6Address(realLen);
+    case 'mac-address':
+      return randomMacAddress(realLen);
+    case 'imei': {
+      boundedLen(realLen, 0, 15, 15);
+      const body = `${3 + randInt(6)}${digits(13)}`;
+      return `${body}${luhnCheckDigit(body)}`;
+    }
+    case 'vin':
+      return randomVin(realLen);
+    case 'uuid':
+      return randomUuidV4(realLen);
     case 'phone-e164': {
       const len = Math.max(8, Math.min(15, realValue.replace(/^\+/, '').length));
       const out = `+${1 + randInt(9)}${digits(len - 1)}`;
@@ -792,6 +968,48 @@ function dummyRealForType(type: DecoyType, lenHint: number): string {
       return `mongodb://${'x'.repeat(Math.max(0, lenHint - 'mongodb://'.length))}`;
     case 'phone-e164':
       return `+${'1'.repeat(Math.max(0, lenHint - 1))}`;
+    case 'lei':
+      return '0'.repeat(Math.max(20, lenHint));
+    case 'isin':
+      return 'US' + '0'.repeat(Math.max(10, lenHint - 2));
+    case 'cusip':
+      return '0'.repeat(Math.max(9, lenHint));
+    case 'us-ein':
+      return `12-${'0'.repeat(7)}`;
+    case 'duns':
+      return '0'.repeat(Math.max(9, lenHint));
+    case 'us-routing-number':
+      return '0'.repeat(Math.max(9, lenHint));
+    case 'us-bank-account':
+      return '0'.repeat(Math.max(8, lenHint));
+    case 'bic-swift':
+      return 'DEMOUS00XXX';
+    case 'us-itin':
+      return '900-70-0000';
+    case 'passport-mrz':
+      return `${'P<UTOERIKSSON<<ANNA<MARIA'.padEnd(44, '<')}\nL898902C36UTO7408122F1204159ZE184226B<<<<<10`;
+    case 'us-passport':
+      return 'A12345678';
+    case 'uscis-number':
+      return '123456789';
+    case 'aadhaar':
+      return '234567890124';
+    case 'eidas-id':
+      return 'ES/AT/02635542Y';
+    case 'email-address':
+      return 'alex@exampleco.com';
+    case 'ipv4-address':
+      return '192.168.100.200';
+    case 'ipv6-address':
+      return '2001:0db8:85a3:0000:0000:8a2e:0370:7334';
+    case 'mac-address':
+      return '02:00:5e:10:00:00';
+    case 'imei':
+      return '490154203237518';
+    case 'vin':
+      return '1HGCM82633A004352';
+    case 'uuid':
+      return '550e8400-e29b-41d4-a716-446655440000';
     case 'gcp-service-account-key':
       return JSON.stringify({
         type: 'service_account',
@@ -890,6 +1108,56 @@ function defaultLengthForType(type: DecoyType): number {
       return 11;
     case 'uk-ni-number':
       return 9;
+    case 'us-npi':
+      return 10;
+    case 'us-dea-number':
+      return 9;
+    case 'us-medicare-mbi':
+      return 11;
+    case 'us-ndc':
+      return 13;
+    case 'lei':
+      return 20;
+    case 'isin':
+      return 12;
+    case 'cusip':
+      return 9;
+    case 'us-ein':
+      return 10;
+    case 'duns':
+      return 9;
+    case 'us-routing-number':
+      return 9;
+    case 'us-bank-account':
+      return 12;
+    case 'bic-swift':
+      return 11;
+    case 'us-itin':
+      return 11;
+    case 'passport-mrz':
+      return 89;
+    case 'us-passport':
+      return 9;
+    case 'uscis-number':
+      return 9;
+    case 'aadhaar':
+      return 12;
+    case 'eidas-id':
+      return 15;
+    case 'email-address':
+      return 22;
+    case 'ipv4-address':
+      return 15;
+    case 'ipv6-address':
+      return 39;
+    case 'mac-address':
+      return 17;
+    case 'imei':
+      return 15;
+    case 'vin':
+      return 17;
+    case 'uuid':
+      return 36;
     case 'phone-e164':
       return 15;
     case 'generic':

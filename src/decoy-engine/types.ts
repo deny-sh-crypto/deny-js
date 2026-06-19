@@ -63,6 +63,36 @@ export type DecoyType =
   | 'uk-nhs-number'
   | 'us-ssn'
   | 'uk-ni-number'
+  // Added 2026-06-19: medical / health identifiers
+  | 'us-npi'
+  | 'us-dea-number'
+  | 'us-medicare-mbi'
+  | 'us-ndc'
+  // Added 2026-06-19: business / securities identifiers
+  | 'lei'
+  | 'isin'
+  | 'cusip'
+  | 'us-ein'
+  | 'duns'
+  // Added 2026-06-19: banking / payment identifiers
+  | 'us-routing-number'
+  | 'us-bank-account'
+  | 'bic-swift'
+  // Added 2026-06-19: legal / government / identity identifiers
+  | 'us-itin'
+  | 'passport-mrz'
+  | 'us-passport'
+  | 'uscis-number'
+  | 'aadhaar'
+  | 'eidas-id'
+  // Added 2026-06-19: universal / tech / comms identifiers
+  | 'email-address'
+  | 'ipv4-address'
+  | 'ipv6-address'
+  | 'mac-address'
+  | 'imei'
+  | 'vin'
+  | 'uuid'
   // Added 2026-05-22: phone
   | 'phone-e164'
   // Fallbacks
@@ -112,6 +142,31 @@ export const KNOWN_TYPES: readonly DecoyType[] = Object.freeze([
   'uk-nhs-number',
   'us-ssn',
   'uk-ni-number',
+  'us-npi',
+  'us-dea-number',
+  'us-medicare-mbi',
+  'us-ndc',
+  'lei',
+  'isin',
+  'cusip',
+  'us-ein',
+  'duns',
+  'us-routing-number',
+  'us-bank-account',
+  'bic-swift',
+  'us-itin',
+  'passport-mrz',
+  'us-passport',
+  'uscis-number',
+  'aadhaar',
+  'eidas-id',
+  'email-address',
+  'ipv4-address',
+  'ipv6-address',
+  'mac-address',
+  'imei',
+  'vin',
+  'uuid',
   'phone-e164',
   'generic',
   'freeform-secret',

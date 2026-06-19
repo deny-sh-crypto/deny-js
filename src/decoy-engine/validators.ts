@@ -121,6 +121,133 @@ export function ibanCheckDigits(countryCode: string, bban: string): string {
   return check < 10 ? `0${check}` : String(check);
 }
 
+// ─── Business / securities identifiers ───────────────────────────────────
+
+function luhnValidNumeric(digits: string): boolean {
+  if (!/^[0-9]+$/.test(digits)) return false;
+  let sum = 0;
+  let alternate = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48;
+    if (alternate) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+    alternate = !alternate;
+  }
+  return sum % 10 === 0;
+}
+
+function alphaNumToNumeric(value: string): string {
+  let out = '';
+  for (const ch of value.toUpperCase()) {
+    if (ch >= '0' && ch <= '9') out += ch;
+    else if (ch >= 'A' && ch <= 'Z') out += String(ch.charCodeAt(0) - 55);
+    else return '';
+  }
+  return out;
+}
+
+/** LEI ISO 17442 / ISO 7064 mod-97 check. */
+export function leiValid(value: string): boolean {
+  const lei = value.toUpperCase();
+  if (!/^[A-Z0-9]{18}[0-9]{2}$/.test(lei)) return false;
+  const numeric = alphaNumToNumeric(lei);
+  return numeric !== '' && mod97(numeric) === 1;
+}
+
+/** Compute LEI check digits for an 18-char alphanumeric body. */
+export function leiCheckDigits(body18: string): string {
+  const body = body18.toUpperCase();
+  if (!/^[A-Z0-9]{18}$/.test(body)) throw new Error('LEI body must be 18 uppercase alphanumeric chars');
+  const remainder = mod97(alphaNumToNumeric(`${body}00`));
+  const check = 98 - remainder;
+  return String(check).padStart(2, '0');
+}
+
+/** ISIN checksum: alpha expansion A=10..Z=35, then Luhn over expanded digits. */
+export function isinValid(value: string): boolean {
+  const isin = value.toUpperCase();
+  if (!/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(isin)) return false;
+  const numeric = alphaNumToNumeric(isin);
+  return numeric !== '' && luhnValidNumeric(numeric);
+}
+
+/** Compute the ISIN Luhn check digit for the first 11 ISIN characters. */
+export function isinCheckDigit(body11: string): number {
+  const body = body11.toUpperCase();
+  if (!/^[A-Z]{2}[A-Z0-9]{9}$/.test(body)) throw new Error('ISIN body must be 2 letters + 9 alphanumeric chars');
+  return luhnCheckDigit(alphaNumToNumeric(body));
+}
+
+function cusipCharValue(ch: string): number {
+  if (ch >= '0' && ch <= '9') return ch.charCodeAt(0) - 48;
+  if (ch >= 'A' && ch <= 'Z') return ch.charCodeAt(0) - 55;
+  if (ch === '*') return 36;
+  if (ch === '@') return 37;
+  if (ch === '#') return 38;
+  return -1;
+}
+
+/** CUSIP mod-10 check digit, alternating weights 1/2 from the left. */
+export function cusipCheckDigit(body8: string): number {
+  const body = body8.toUpperCase();
+  if (!/^[A-Z0-9*@#]{8}$/.test(body)) throw new Error('CUSIP body must be 8 CUSIP chars');
+  let sum = 0;
+  for (let i = 0; i < body.length; i++) {
+    const raw = cusipCharValue(body[i]!);
+    const weighted = raw * (i % 2 === 0 ? 1 : 2);
+    sum += Math.floor(weighted / 10) + (weighted % 10);
+  }
+  return (10 - (sum % 10)) % 10;
+}
+
+export function cusipValid(value: string): boolean {
+  const cusip = value.toUpperCase();
+  if (!/^[A-Z0-9*@#]{8}[0-9]$/.test(cusip)) return false;
+  return cusipCheckDigit(cusip.slice(0, 8)) === cusip.charCodeAt(8) - 48;
+}
+
+const EIN_PREFIXES = new Set([
+  '01', '02', '03', '04', '05', '06', '10', '11', '12', '13', '14', '15', '16',
+  '20', '21', '22', '23', '24', '25', '26', '27', '30', '31', '32', '33', '34',
+  '35', '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47',
+  '48', '50', '51', '52', '53', '54', '55', '56', '57', '58', '59', '60', '61',
+  '62', '63', '64', '65', '66', '67', '68', '71', '72', '73', '74', '75', '76',
+  '77', '80', '81', '82', '83', '84', '85', '86', '87', '88', '90', '91', '92',
+  '93', '94', '95', '98', '99',
+]);
+
+export function einValid(value: string): boolean {
+  if (!/^[0-9]{2}-[0-9]{7}$/.test(value)) return false;
+  return EIN_PREFIXES.has(value.slice(0, 2));
+}
+
+// ─── Banking / payment identifiers ───────────────────────────────────────
+
+/** ABA routing number checksum: weights 3,7,1 repeated over all 9 digits. */
+export function abaRoutingNumberValid(value: string): boolean {
+  if (!/^[0-9]{9}$/.test(value)) return false;
+  const weights = [3, 7, 1];
+  let sum = 0;
+  for (let i = 0; i < value.length; i++) {
+    sum += (value.charCodeAt(i) - 48) * weights[i % 3]!;
+  }
+  return sum % 10 === 0;
+}
+
+/** Compute the final ABA check digit for the first 8 routing-number digits. */
+export function abaRoutingCheckDigit(body8: string): number {
+  if (!/^[0-9]{8}$/.test(body8)) throw new Error('ABA routing body must be 8 digits');
+  const weights = [3, 7, 1, 3, 7, 1, 3, 7];
+  let sum = 0;
+  for (let i = 0; i < body8.length; i++) {
+    sum += (body8.charCodeAt(i) - 48) * weights[i]!;
+  }
+  return (10 - (sum % 10)) % 10;
+}
+
 // ─── BIP-39 checksum (seed phrases) ───────────────────────────────────────
 
 const BIP39_INDEX: Map<string, number> = new Map(BIP39_WORDS.map((w, i) => [w, i]));
@@ -336,6 +463,189 @@ export function nhsCheckDigit(body9: string): number | null {
   return check;
 }
 
+// --- US medical identifiers ------------------------------------------------
+
+export function npiValid(value: string): boolean {
+  const digits = value.replace(/\s+/g, '');
+  return /^[0-9]{10}$/.test(digits) && luhnValid(`80840${digits}`);
+}
+
+export function deaCheckDigit(body6: string): number {
+  if (!/^[0-9]{6}$/.test(body6)) throw new Error('DEA body must be 6 digits');
+  const d = Array.from(body6, (ch) => ch.charCodeAt(0) - 48);
+  return (d[0]! + d[2]! + d[4]! + 2 * (d[1]! + d[3]! + d[5]!)) % 10;
+}
+
+export function deaNumberValid(value: string): boolean {
+  if (!/^[A-Z]{2}[0-9]{7}$/.test(value)) return false;
+  const body = value.slice(2, 8);
+  return deaCheckDigit(body) === value.charCodeAt(8) - 48;
+}
+
+// --- Legal / government / identity identifiers ----------------------------
+
+export function itinValid(value: string): boolean {
+  if (!/^9[0-9]{2}-[0-9]{2}-[0-9]{4}$/.test(value)) return false;
+  const group = Number(value.slice(4, 6));
+  return (group >= 50 && group <= 65)
+    || (group >= 70 && group <= 88)
+    || (group >= 90 && group <= 92)
+    || (group >= 94 && group <= 99);
+}
+
+function mrzCharValue(ch: string): number {
+  if (ch >= '0' && ch <= '9') return ch.charCodeAt(0) - 48;
+  if (ch >= 'A' && ch <= 'Z') return ch.charCodeAt(0) - 55;
+  if (ch === '<') return 0;
+  return -1;
+}
+
+/**
+ * ICAO Doc 9303 MRZ check digit. Characters map 0-9/A-Z/< to 0-9/10-35/0 and
+ * use repeated 7,3,1 weights across the checked field.
+ */
+export function mrzCheckDigit(field: string): number {
+  const weights = [7, 3, 1];
+  let sum = 0;
+  for (let i = 0; i < field.length; i++) {
+    const value = mrzCharValue(field[i]!);
+    if (value < 0) throw new Error('MRZ field contains invalid character');
+    sum += value * weights[i % 3]!;
+  }
+  return sum % 10;
+}
+
+export function passportMrzValid(value: string): boolean {
+  if (!/^[A-Z0-9<]{44}\n[A-Z0-9<]{44}$/.test(value)) return false;
+  const [, line2] = value.split('\n');
+  if (line2 === undefined) return false;
+  if (mrzCheckDigit(line2.slice(0, 9)) !== line2.charCodeAt(9) - 48) return false;
+  if (mrzCheckDigit(line2.slice(13, 19)) !== line2.charCodeAt(19) - 48) return false;
+  if (mrzCheckDigit(line2.slice(21, 27)) !== line2.charCodeAt(27) - 48) return false;
+  if (mrzCheckDigit(line2.slice(28, 42)) !== line2.charCodeAt(42) - 48) return false;
+  const composite = `${line2.slice(0, 10)}${line2.slice(13, 20)}${line2.slice(21, 43)}`;
+  return mrzCheckDigit(composite) === line2.charCodeAt(43) - 48;
+}
+
+const VERHOEFF_D = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+  [1, 2, 3, 4, 0, 6, 7, 8, 9, 5],
+  [2, 3, 4, 0, 1, 7, 8, 9, 5, 6],
+  [3, 4, 0, 1, 2, 8, 9, 5, 6, 7],
+  [4, 0, 1, 2, 3, 9, 5, 6, 7, 8],
+  [5, 9, 8, 7, 6, 0, 4, 3, 2, 1],
+  [6, 5, 9, 8, 7, 1, 0, 4, 3, 2],
+  [7, 6, 5, 9, 8, 2, 1, 0, 4, 3],
+  [8, 7, 6, 5, 9, 3, 2, 1, 0, 4],
+  [9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+] as const;
+const VERHOEFF_P = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+  [1, 5, 7, 6, 2, 8, 3, 0, 9, 4],
+  [5, 8, 0, 3, 7, 9, 6, 1, 4, 2],
+  [8, 9, 1, 6, 0, 4, 3, 5, 2, 7],
+  [9, 4, 5, 3, 1, 2, 6, 8, 7, 0],
+  [4, 2, 8, 6, 5, 7, 3, 9, 0, 1],
+  [2, 7, 9, 3, 8, 0, 6, 4, 1, 5],
+  [7, 0, 4, 6, 9, 1, 3, 2, 5, 8],
+] as const;
+const VERHOEFF_INV = [0, 4, 3, 2, 1, 5, 6, 7, 8, 9] as const;
+
+/**
+ * Verhoeff decimal checksum (dihedral-group tables d/p/inv). Aadhaar uses the
+ * final digit as a Verhoeff check digit over the preceding 11 digits.
+ */
+export function verhoeffCheckDigit(body: string): number {
+  if (!/^[0-9]+$/.test(body)) throw new Error('Verhoeff body must be digits');
+  let c = 0;
+  for (let i = 0; i < body.length; i++) {
+    const digit = body.charCodeAt(body.length - 1 - i) - 48;
+    c = VERHOEFF_D[c]![VERHOEFF_P[(i + 1) % 8]![digit]!]!;
+  }
+  return VERHOEFF_INV[c]!;
+}
+
+export function aadhaarValid(value: string): boolean {
+  if (!/^[2-9][0-9]{11}$/.test(value)) return false;
+  let c = 0;
+  for (let i = 0; i < value.length; i++) {
+    const digit = value.charCodeAt(value.length - 1 - i) - 48;
+    c = VERHOEFF_D[c]![VERHOEFF_P[i % 8]![digit]!]!;
+  }
+  return c === 0;
+}
+
+export function eidasIdValid(value: string): boolean {
+  return /^[A-Z]{2}\/[A-Z]{2}\/[A-Z0-9]{1,20}$/.test(value);
+}
+
+// --- Universal / tech / comms identifiers ---------------------------------
+
+export function emailAddressValid(value: string): boolean {
+  if (value.length > 254) return false;
+  const parts = value.split('@');
+  if (parts.length !== 2) return false;
+  const [local, domain] = parts;
+  if (!local || !domain || local.length > 64) return false;
+  if (!/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(local)) return false;
+  const labels = domain.split('.');
+  if (labels.length < 2) return false;
+  if (!/^[A-Za-z]{2,24}$/.test(labels[labels.length - 1]!)) return false;
+  return labels.every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label));
+}
+
+export function ipv4AddressValid(value: string): boolean {
+  const parts = value.split('.');
+  return parts.length === 4
+    && parts.every((part) => /^[0-9]{1,3}$/.test(part) && Number(part) <= 255);
+}
+
+export function ipv6AddressValid(value: string): boolean {
+  return /^[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}$/.test(value);
+}
+
+export function macAddressValid(value: string): boolean {
+  if (!/^[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}$/.test(value)) return false;
+  return (parseInt(value.slice(0, 2), 16) & 0x02) === 0x02;
+}
+
+export function imeiValid(value: string): boolean {
+  return /^[0-9]{15}$/.test(value) && luhnValid(value);
+}
+
+function vinTranslit(ch: string): number {
+  if (ch >= '0' && ch <= '9') return ch.charCodeAt(0) - 48;
+  const map: Record<string, number> = {
+    A: 1, B: 2, C: 3, D: 4, E: 5, F: 6, G: 7, H: 8,
+    J: 1, K: 2, L: 3, M: 4, N: 5, P: 7, R: 9,
+    S: 2, T: 3, U: 4, V: 5, W: 6, X: 7, Y: 8, Z: 9,
+  };
+  return map[ch] ?? -1;
+}
+
+export function vinCheckDigit(vin17: string): string {
+  const vin = vin17.toUpperCase();
+  if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) throw new Error('VIN must be 17 chars excluding I/O/Q');
+  const weights = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
+  let sum = 0;
+  for (let i = 0; i < vin.length; i++) {
+    const value = vinTranslit(vin[i]!);
+    if (value < 0) throw new Error('VIN contains invalid character');
+    sum += value * weights[i]!;
+  }
+  const rem = sum % 11;
+  return rem === 10 ? 'X' : String(rem);
+}
+
+export function vinValid(value: string): boolean {
+  const vin = value.toUpperCase();
+  return /^[A-HJ-NPR-Z0-9]{17}$/.test(vin) && vin[8] === vinCheckDigit(vin);
+}
+
+export function uuidValid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 // ─── Dispatcher ───────────────────────────────────────────────────────────
 
 /**
@@ -365,6 +675,53 @@ export function passesDeepValidity(value: string, type: DecoyType): boolean {
       return ethereumKeyValid(value);
     case 'uk-nhs-number':
       return nhsMod11Valid(value);
+    case 'us-npi':
+      return npiValid(value);
+    case 'us-dea-number':
+      return deaNumberValid(value);
+    case 'lei':
+      return leiValid(value);
+    case 'isin':
+      return isinValid(value);
+    case 'cusip':
+      return cusipValid(value);
+    case 'us-ein':
+      return einValid(value);
+    case 'duns':
+      return matchesShape(value, type);
+    case 'us-routing-number':
+      return abaRoutingNumberValid(value);
+    case 'us-bank-account':
+    case 'bic-swift':
+      return matchesShape(value, type);
+    case 'us-medicare-mbi':
+    case 'us-ndc':
+      return matchesShape(value, type);
+    case 'us-itin':
+      return itinValid(value);
+    case 'passport-mrz':
+      return passportMrzValid(value);
+    case 'aadhaar':
+      return aadhaarValid(value);
+    case 'eidas-id':
+      return eidasIdValid(value);
+    case 'email-address':
+      return emailAddressValid(value);
+    case 'ipv4-address':
+      return ipv4AddressValid(value);
+    case 'ipv6-address':
+      return ipv6AddressValid(value);
+    case 'mac-address':
+      return macAddressValid(value);
+    case 'imei':
+      return imeiValid(value);
+    case 'vin':
+      return vinValid(value);
+    case 'uuid':
+      return uuidValid(value);
+    case 'us-passport':
+    case 'uscis-number':
+      return matchesShape(value, type);
     // Types whose integrity is purely structural (opaque random bodies, key
     // prefixes, URIs, PEM framing, JWT JSON header) have no additional checksum
     // a real value would pass that a shape-correct decoy would fail. The regex
