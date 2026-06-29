@@ -44,10 +44,11 @@ import {
   bucketedPayloadLength,
 } from './core.js';
 import type { DecoyType } from './decoy-engine/types.js';
-import { isHoneyEligible, generateHoneyDecoy } from './record-decoy-generators.js';
+import { isHoneyEligible, generateHoneyDecoy, defaultLengthForType } from './record-decoy-generators.js';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const LENGTH_PREFIX = 4;
 
 /** Parameters for a honey-enabled single-secret encrypt. */
 export interface EncryptHoneyParams {
@@ -262,10 +263,15 @@ export async function decryptHoneyWithBranch(
   // Always do both branch workloads before selecting output. This keeps the
   // real/decoy-slot path and wrong-password honey path timing shape aligned
   // without changing the generator's seed material or draw order.
+  const defaultLengthHint = defaultLengthForType(honeyType);
+  const realLengthHint = bucketedPayloadLength(defaultLengthHint + LENGTH_PREFIX) === payload.length
+    ? defaultLengthHint
+    : Math.max(0, payload.length - LENGTH_PREFIX);
   const fake = generateHoneyDecoy({
     type: honeyType,
     decryptBytes: payload,
     salt,
+    realLengthHint,
   });
   const decoded = textDecoder.decode(plaintext);
   return wellFormed

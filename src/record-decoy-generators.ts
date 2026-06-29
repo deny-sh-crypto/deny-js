@@ -1024,7 +1024,7 @@ function dummyRealForType(type: DecoyType, lenHint: number): string {
   }
 }
 
-function defaultLengthForType(type: DecoyType): number {
+export function defaultLengthForType(type: DecoyType): number {
   switch (type) {
     case 'stripe-test-key':
       return 32;

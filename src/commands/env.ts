@@ -5,7 +5,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, basename, dirname, join } from 'node:path';
-import { encrypt, decrypt, generateControlData } from '../index.js';
+import { encrypt, decrypt, generateControlData, bucketedPayloadLength } from '../index.js';
 import {
   banner, success, warn, info, step, bold, dim, progressBar
 } from '../utils/display.js';
@@ -45,8 +45,9 @@ export async function cmdEnvProtect(flags: Record<string, string>): Promise<void
   await animateProgress('Encrypting');
 
   const plaintext = new TextEncoder().encode(envContent);
-  const controlData = generateControlData(Math.max(plaintext.length + 4, 256));
-  const { ciphertext } = await encrypt(plaintext, { password1: pw1, password2: pw2, controlData });
+  const bucketSize = Math.max(bucketedPayloadLength(plaintext.length + 4), 256);
+  const controlData = generateControlData(bucketSize);
+  const { ciphertext } = await encrypt(plaintext, { password1: pw1, password2: pw2, controlData, padToBucket: true, bucketSize });
 
   // Output paths
   const envDir   = dirname(resolvedEnv);

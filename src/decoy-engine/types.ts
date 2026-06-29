@@ -10,7 +10,9 @@
  * Type list grew from the original 17 (15 named + generic + freeform-secret) to
  * 44 on 2026-06-09 (41 named + generic + freeform-secret) after GCP/Azure
  * credential shapes were added. Previous expansion was 40 on 2026-05-22 ahead of the
- * walkthrough video. New types: 14 additional API tokens (slack-bot/user,
+ * walkthrough video. 2.3.0 expansion: 69 on 2026-06-19 (67 named + 2 catch-alls)
+ * after medical, business, banking, identity, contact, network, device, vehicle,
+ * and UUID shapes were added. New types: 14 additional API tokens (slack-bot/user,
  * discord-bot, digitalocean-pat, twilio-auth, sendgrid, huggingface, npm-publish,
  * pypi, gitlab-pat, mailgun, linear, notion, shopify, square, cloudflare),
  * 3 crypto private keys (ethereum, bitcoin-wif, solana), 3 identity numbers
